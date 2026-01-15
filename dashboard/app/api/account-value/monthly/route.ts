@@ -9,6 +9,17 @@ export type MonthlyAccountValueData = {
   losses: number;
 };
 
+type BalanceHistoryRecord = {
+  account_value: string | number | null;
+  timestamp: string;
+};
+
+type PortfolioActivityRecord = {
+  type: string;
+  amount: string | number | null;
+  timestamp: string;
+};
+
 /**
  * GET: Fetch monthly account value data for the last 12 months
  * Calculates opening/closing balances and gains/losses per month
@@ -60,7 +71,8 @@ export async function GET(req: NextRequest) {
 
     // Step 4: Process balance history to get opening/closing balances per month
     if (balanceHistory && balanceHistory.length > 0) {
-      for (const record of balanceHistory) {
+      const typedBalanceHistory = balanceHistory as BalanceHistoryRecord[];
+      for (const record of typedBalanceHistory) {
         const recordDate = new Date(record.timestamp);
         const monthKey = `${recordDate.getFullYear()}-${String(recordDate.getMonth() + 1).padStart(2, "0")}`;
         const monthData = monthlyData.get(monthKey);
@@ -81,7 +93,8 @@ export async function GET(req: NextRequest) {
 
     // Step 5: Process activities to calculate gains/losses per month
     if (activities && activities.length > 0) {
-      for (const activity of activities) {
+      const typedActivities = activities as PortfolioActivityRecord[];
+      for (const activity of typedActivities) {
         const activityDate = new Date(activity.timestamp);
         const monthKey = `${activityDate.getFullYear()}-${String(activityDate.getMonth() + 1).padStart(2, "0")}`;
         const monthData = monthlyData.get(monthKey);
