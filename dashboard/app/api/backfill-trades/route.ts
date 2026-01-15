@@ -96,10 +96,14 @@ export async function POST(req: NextRequest) {
       // Insert trades, handling duplicates gracefully
       for (const trade of tradesToSave) {
         try {
-          await sb.from("trades").insert(trade).catch(() => {
+          const { error } = await sb.from("trades").insert(trade as any);
+          if (error) {
             // Ignore duplicate errors
-          });
-        } catch {}
+            console.log(`Skipped duplicate trade: ${error.message}`);
+          }
+        } catch (err) {
+          // Ignore any errors (duplicates, etc.)
+        }
       }
       console.log(`Saved ${tradesToSave.length} trades from Hyperliquid fills`);
     }
