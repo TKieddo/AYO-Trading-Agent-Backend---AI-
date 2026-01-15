@@ -7,9 +7,10 @@ import { getServerSupabase } from "@/lib/supabase/server";
  */
 export async function GET(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const supabase = getServerSupabase();
     if (!supabase) {
       return NextResponse.json(
@@ -21,7 +22,7 @@ export async function GET(
     const { data: optimization, error } = await supabase
       .from("strategy_optimizations")
       .select("*")
-      .eq("id", params.id)
+      .eq("id", id)
       .single();
 
     if (error || !optimization) {
@@ -35,7 +36,7 @@ export async function GET(
     const { data: latestIteration } = await supabase
       .from("optimization_iterations")
       .select("parameters, llm_reasoning")
-      .eq("optimization_id", params.id)
+      .eq("optimization_id", id)
       .order("iteration_number", { ascending: false })
       .limit(1)
       .single();

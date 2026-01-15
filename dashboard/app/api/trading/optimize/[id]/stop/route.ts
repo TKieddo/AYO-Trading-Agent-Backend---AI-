@@ -7,9 +7,10 @@ import { getServerSupabase } from "@/lib/supabase/server";
  */
 export async function POST(
   req: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
+    const { id } = await params;
     const supabase = getServerSupabase();
     if (!supabase) {
       return NextResponse.json(
@@ -25,7 +26,7 @@ export async function POST(
         stopped_reason: "User requested stop",
         completed_at: new Date().toISOString(),
       })
-      .eq("id", params.id)
+      .eq("id", id)
       .select()
       .single();
 
