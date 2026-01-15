@@ -123,8 +123,8 @@ export async function GET() {
     }, 0);
     
     // Calculate total from balance endpoint (sum of all asset balances)
-    // This is the sum of all "balance" fields from /fapi/v3/balance endpoint
-    const totalBalanceFromBalances = mapped.reduce((sum, b) => sum + Number(b.walletBalance || b.balance || 0), 0);
+    // This is the sum of all "walletBalance" fields from /fapi/v3/balance endpoint
+    const totalBalanceFromBalances = mapped.reduce((sum, b) => sum + Number(b.walletBalance || 0), 0);
     
     // Also calculate sum of crossWalletBalance (crossed wallet balance)
     const totalCrossWalletBalance = mapped.reduce((sum, b) => sum + Number(b.crossWalletBalance || 0), 0);
