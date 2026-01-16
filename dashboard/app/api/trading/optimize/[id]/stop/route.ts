@@ -26,7 +26,7 @@ export async function POST(
     };
     const { data: optimization, error: updateError } = await supabase
       .from("strategy_optimizations")
-      .update(updateData)
+      .update(updateData as any)
       .eq("id", id)
       .select()
       .single();

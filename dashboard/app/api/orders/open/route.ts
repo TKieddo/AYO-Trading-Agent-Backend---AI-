@@ -180,9 +180,9 @@ export async function GET(req: NextRequest) {
             status: "filled",
             updated_at: new Date().toISOString(),
           };
-          await sb
+          await (sb
             .from("orders")
-            .update(updateData)
+            .update(updateData as any) as any)
             .in("order_id", closedOrders);
           console.log(`Marked ${closedOrders.length} orders as filled`);
         }

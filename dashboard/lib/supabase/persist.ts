@@ -25,9 +25,9 @@ export async function persistPositions(rows: any[]) {
     if (openPositions.length === 0) {
       // If no open positions, mark all existing positions as closed
       const updateData: any = { closed_at: new Date().toISOString() };
-      await supabase
+      await (supabase
         .from("positions")
-        .update(updateData)
+        .update(updateData as any) as any)
         .is("closed_at", null);
       return;
     }
@@ -59,9 +59,9 @@ export async function persistPositions(rows: any[]) {
 
     // Mark positions with size = 0 as closed
     const updateData: any = { closed_at: new Date().toISOString() };
-    await supabase
+    await (supabase
       .from("positions")
-      .update(updateData)
+      .update(updateData as any) as any)
       .is("closed_at", null)
       .eq("size", 0);
 
@@ -85,9 +85,9 @@ export async function persistPositions(rows: any[]) {
       }
       if (toClose.length > 0) {
         const updateData: any = { closed_at: new Date().toISOString() };
-        await supabase
+        await (supabase
           .from("positions")
-          .update(updateData)
+          .update(updateData as any) as any)
           .in("id", toClose);
       }
     }
