@@ -176,12 +176,13 @@ export async function GET(req: NextRequest) {
         
         if (closedOrders.length > 0) {
           // Update status to filled (assume filled if not in open orders)
+          const updateData: any = { 
+            status: "filled",
+            updated_at: new Date().toISOString(),
+          };
           await sb
             .from("orders")
-            .update({ 
-              status: "filled",
-              updated_at: new Date().toISOString(),
-            } as any)
+            .update(updateData)
             .in("order_id", closedOrders);
           console.log(`Marked ${closedOrders.length} orders as filled`);
         }

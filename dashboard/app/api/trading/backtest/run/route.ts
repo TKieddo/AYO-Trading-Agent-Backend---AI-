@@ -125,9 +125,10 @@ export async function POST(req: NextRequest) {
       }
 
       // Update strategy status to "backtested"
+      const updateData: any = { status: "backtested", updated_at: new Date().toISOString() };
       await supabase
         .from("strategies")
-        .update({ status: "backtested", updated_at: new Date().toISOString() } as any)
+        .update(updateData)
         .eq("id", strategy_id);
 
       return NextResponse.json({
