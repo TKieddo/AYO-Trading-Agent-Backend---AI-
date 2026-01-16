@@ -1,6 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase/server";
 
+type TradeRecord = {
+  symbol: string;
+  side: string;
+  size: string | number;
+  price: string | number;
+  fee: string | number | null;
+  pnl: string | number | null;
+  executed_at: string;
+};
+
 /**
  * Backfill existing trades to portfolio_activities table
  * This endpoint syncs all trades with PnL to portfolio_activities
@@ -13,13 +23,16 @@ export async function POST(req: NextRequest) {
     }
 
     // Get all trades with PnL
-    const { data: trades, error: tradesError } = await sb
+    const { data: tradesData, error: tradesError } = await sb
       .from("trades")
       .select("symbol, side, size, price, fee, pnl, executed_at")
       .not("pnl", "is", null)
       .order("executed_at", { ascending: true });
 
     if (tradesError) throw tradesError;
+
+    // Type the query results explicitly
+    const trades: TradeRecord[] = (tradesData || []) as TradeRecord[];
 
     if (!trades || trades.length === 0) {
       return NextResponse.json({
