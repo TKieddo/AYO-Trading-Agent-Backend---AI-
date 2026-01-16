@@ -14,7 +14,7 @@ export function RightSidebar({
   return (
     <div className="flex flex-col gap-4 h-full">
       {/* AI Decisions */}
-      <div className="rounded-xl min-h-[600px]">
+      <div className="rounded-xl min-h-[400px] md:min-h-[600px]">
         <DecisionsFeed />
       </div>
     </div>

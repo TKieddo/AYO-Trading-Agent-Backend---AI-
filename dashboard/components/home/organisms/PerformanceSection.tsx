@@ -94,7 +94,7 @@ export function PerformanceSection({ data }: PerformanceSectionProps) {
   const currentStrategies = getStrategies();
 
   return (
-    <div className="relative rounded-2xl bg-transparent p-6 overflow-hidden min-h-[600px]">
+    <div className="relative rounded-2xl bg-transparent p-4 md:p-6 overflow-hidden min-h-[400px] md:min-h-[600px]">
       <div className="relative z-10">
         {/* Performance Header - Bordered Container */}
         <div className="inline-block rounded-lg border border-lime-400/30 p-3 mb-3 w-fit bg-black/20 backdrop-blur-sm">

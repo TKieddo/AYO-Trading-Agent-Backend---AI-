@@ -159,35 +159,168 @@ export default function HomePage() {
     rightSidebar: rightSidebarData
   };
 
-  // Markets data
+  // Top performing pairs based on closed trades (sorted by total profit)
   const marketsData = [
     {
-      pair: ["Origin", "SNX"],
-      changePercent: "0.0067%",
-      value: "USD 00,160.10",
-      sliderValue: 33,
-      price: "$ 1.02"
+      pair: ["ETH", "USDC"],
+      changePercent: "+2.45%",
+      value: "USD 2,480.50",
+      sliderValue: 85,
+      price: "$ 2,480.50",
+      totalProfit: 45230.75,
+      winCount: 142,
+      totalTrades: 198,
+      category: "crypto" as const
     },
     {
-      pair: ["Tether", "XRP"],
-      changePercent: "0.4567%",
-      value: "USD 13,160.10",
-      sliderValue: 67,
-      price: "$ 2.50"
+      pair: ["BTC", "USD"],
+      changePercent: "+1.89%",
+      value: "USD 43,200.00",
+      sliderValue: 78,
+      price: "$ 43,200.00",
+      totalProfit: 38920.50,
+      winCount: 118,
+      totalTrades: 165,
+      category: "crypto" as const
     },
     {
-      pair: ["Tether", "XRP"],
-      changePercent: "0.4567%",
-      value: "USD 52,160.10",
-      sliderValue: 80,
-      price: "$ 3.75"
+      pair: ["SOL", "USD"],
+      changePercent: "-0.25%",
+      value: "USD 95.50",
+      sliderValue: 65,
+      price: "$ 95.50",
+      totalProfit: 18250.30,
+      winCount: 89,
+      totalTrades: 132,
+      category: "crypto" as const
     },
     {
-      pair: ["Ethereum", "ETH"],
-      changePercent: "0.4567%",
-      value: "USD 00,001.10",
-      sliderValue: 20,
-      price: "$ 0.50"
+      pair: ["AVAX", "USD"],
+      changePercent: "+1.32%",
+      value: "USD 37.50",
+      sliderValue: 55,
+      price: "$ 37.50",
+      totalProfit: 15230.60,
+      winCount: 76,
+      totalTrades: 98,
+      category: "crypto" as const
+    },
+    {
+      pair: ["EUR", "USD"],
+      changePercent: "+0.85%",
+      value: "USD 1.0850",
+      sliderValue: 72,
+      price: "$ 1.0850",
+      totalProfit: 12450.80,
+      winCount: 95,
+      totalTrades: 145,
+      category: "forex" as const
+    },
+    {
+      pair: ["GBP", "USD"],
+      changePercent: "+0.62%",
+      value: "USD 1.2650",
+      sliderValue: 68,
+      price: "$ 1.2650",
+      totalProfit: 9850.40,
+      winCount: 78,
+      totalTrades: 112,
+      category: "forex" as const
+    }
+  ];
+
+  // Sample aggregated positions data (grouped by trading pair)
+  const aggregatedPositions = [
+    {
+      symbol: "ETH/USDC",
+      totalRealizedProfit: 45230.75,
+      totalUnrealizedPnl: 12850.25,
+      totalSize: 125.5,
+      userCount: 47,
+      avgEntryPrice: 2400.00,
+      currentPrice: 2480.50,
+      longCount: 32,
+      shortCount: 15,
+      totalLeverage: 8.5,
+      category: "crypto" as const
+    },
+    {
+      symbol: "BTC/USD",
+      totalRealizedProfit: 38920.50,
+      totalUnrealizedPnl: 15230.00,
+      totalSize: 8.75,
+      userCount: 38,
+      avgEntryPrice: 42000.00,
+      currentPrice: 43200.00,
+      longCount: 28,
+      shortCount: 10,
+      totalLeverage: 6.2,
+      category: "crypto" as const
+    },
+    {
+      symbol: "SOL/USD",
+      totalRealizedProfit: 18250.30,
+      totalUnrealizedPnl: 5420.75,
+      totalSize: 450.0,
+      userCount: 29,
+      avgEntryPrice: 100.00,
+      currentPrice: 95.50,
+      longCount: 12,
+      shortCount: 17,
+      totalLeverage: 4.8,
+      category: "crypto" as const
+    },
+    {
+      symbol: "XRP/USD",
+      totalRealizedProfit: 8950.20,
+      totalUnrealizedPnl: -1250.50,
+      totalSize: 125000.0,
+      userCount: 22,
+      avgEntryPrice: 0.52,
+      currentPrice: 0.48,
+      longCount: 18,
+      shortCount: 4,
+      totalLeverage: 3.5,
+      category: "crypto" as const
+    },
+    {
+      symbol: "AVAX/USD",
+      totalRealizedProfit: 15230.60,
+      totalUnrealizedPnl: 4250.90,
+      totalSize: 850.0,
+      userCount: 25,
+      avgEntryPrice: 35.20,
+      currentPrice: 37.50,
+      longCount: 20,
+      shortCount: 5,
+      totalLeverage: 4.0,
+      category: "crypto" as const
+    },
+    {
+      symbol: "EUR/USD",
+      totalRealizedProfit: 12450.80,
+      totalUnrealizedPnl: 3250.40,
+      totalSize: 125000.0,
+      userCount: 18,
+      avgEntryPrice: 1.0820,
+      currentPrice: 1.0850,
+      longCount: 15,
+      shortCount: 3,
+      totalLeverage: 5.2,
+      category: "forex" as const
+    },
+    {
+      symbol: "GBP/USD",
+      totalRealizedProfit: 9850.40,
+      totalUnrealizedPnl: 2150.20,
+      totalSize: 85000.0,
+      userCount: 15,
+      avgEntryPrice: 1.2600,
+      currentPrice: 1.2650,
+      longCount: 12,
+      shortCount: 3,
+      totalLeverage: 4.0,
+      category: "forex" as const
     }
   ];
 
@@ -195,6 +328,7 @@ export default function HomePage() {
     <HomeTemplate
       performanceData={performanceData}
       marketsData={marketsData}
+      aggregatedPositions={aggregatedPositions}
     />
   );
 }
