@@ -7,8 +7,8 @@ interface BadgeProps {
 export function Badge({ children, variant = "default", className = "" }: BadgeProps) {
   const baseClasses = "px-2 py-1 rounded-full text-xs";
   const variantClasses = variant === "gray" 
-    ? "bg-gray-700 text-white" 
-    : "bg-gray-800 text-white";
+    ? "bg-slate-200 text-slate-700" 
+    : "bg-slate-100 text-slate-700";
   
   return (
     <span className={`${baseClasses} ${variantClasses} ${className}`}>

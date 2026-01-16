@@ -49,7 +49,7 @@ export function HomeTemplate({
   marketsData
 }: HomeTemplateProps) {
   return (
-    <div className="min-h-screen bg-black text-white flex flex-col">
+    <div className="min-h-screen bg-[#e8eaec] flex flex-col">
       <HomeTopbar />
       
       <main className="flex-1 p-6 grid grid-cols-12 gap-6 overflow-auto">

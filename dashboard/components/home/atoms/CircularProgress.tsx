@@ -27,7 +27,7 @@ export function CircularProgress({
             stroke="currentColor"
             strokeWidth="8"
             fill="none"
-            className="text-gray-700"
+            className="text-slate-200"
           />
           <circle
             cx={size / 2}
@@ -42,10 +42,10 @@ export function CircularProgress({
           />
         </svg>
         <div className="absolute inset-0 flex items-center justify-center">
-          <span className="text-white text-2xl font-bold">{value}%</span>
+          <span className="text-slate-900 text-2xl font-bold">{value}%</span>
         </div>
       </div>
-      {label && <span className="text-white text-sm mt-4">{label}</span>}
+      {label && <span className="text-slate-700 text-sm mt-4">{label}</span>}
     </div>
   );
 }

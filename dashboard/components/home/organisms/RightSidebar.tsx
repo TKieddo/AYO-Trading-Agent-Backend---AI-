@@ -1,5 +1,6 @@
 import { CircularProgress } from "../atoms/CircularProgress";
 import { Badge } from "../atoms/Badge";
+import { DecisionsFeed } from "@/components/dashboard/DecisionsFeed";
 
 interface RightSidebarProps {
   nftImage?: React.ReactNode;
@@ -15,11 +16,11 @@ export function RightSidebar({
   return (
     <div className="flex flex-col gap-4">
       {/* NFT Card */}
-      <div className="rounded-xl bg-gray-800 p-4">
-        <div className="w-full h-32 bg-gray-700 rounded-lg mb-3 flex items-center justify-center overflow-hidden">
+      <div className="rounded-xl bg-white border border-black/10 p-4">
+        <div className="w-full h-32 bg-slate-100 rounded-lg mb-3 flex items-center justify-center overflow-hidden">
           {nftImage || (
-            <div className="w-24 h-24 bg-gradient-to-br from-gray-600 to-gray-800 rounded-full flex items-center justify-center">
-              <svg className="w-16 h-16 text-gray-500" fill="currentColor" viewBox="0 0 20 20">
+            <div className="w-24 h-24 bg-gradient-to-br from-slate-200 to-slate-300 rounded-full flex items-center justify-center">
+              <svg className="w-16 h-16 text-slate-400" fill="currentColor" viewBox="0 0 20 20">
                 <path fillRule="evenodd" d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" clipRule="evenodd" />
               </svg>
             </div>
@@ -42,12 +43,17 @@ export function RightSidebar({
       </div>
 
       {/* Circular Progress Chart */}
-      <div className="rounded-xl bg-gray-800 p-4 flex flex-col items-center">
+      <div className="rounded-xl bg-white border border-black/10 p-4 flex flex-col items-center">
         <CircularProgress 
           value={progressValue} 
           label={progressLabel}
           size={100}
         />
+      </div>
+
+      {/* AI Decisions */}
+      <div className="rounded-xl">
+        <DecisionsFeed />
       </div>
     </div>
   );

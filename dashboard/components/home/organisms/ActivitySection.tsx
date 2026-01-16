@@ -34,8 +34,8 @@ export function ActivitySection({
   const [selectedTab, setSelectedTab] = useState<"Investors" | "Trading">("Investors");
 
   return (
-    <div className="rounded-2xl bg-gray-900 p-6">
-      <h2 className="text-white text-lg font-semibold mb-4">Activity valiue over time</h2>
+    <div className="rounded-2xl bg-white border border-black/10 p-6">
+      <h2 className="text-slate-900 text-lg font-semibold mb-4">Activity valiue over time</h2>
       
       <ToggleButtons
         options={["Investors", "Trading"]}

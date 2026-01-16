@@ -12,8 +12,8 @@ export function BarChart({ data, labels, maxValue, title }: BarChartProps) {
     <div>
       {title && (
         <div className="flex items-center justify-between mb-2">
-          <span className="text-gray-400 text-xs">{title}</span>
-          {maxValue && <span className="text-white text-xs">{maxValue}</span>}
+          <span className="text-slate-500 text-xs">{title}</span>
+          {maxValue && <span className="text-slate-900 text-xs">{maxValue}</span>}
         </div>
       )}
       <div className="flex items-end justify-between gap-1 h-32">
@@ -21,11 +21,11 @@ export function BarChart({ data, labels, maxValue, title }: BarChartProps) {
           <div key={index} className="flex-1 flex flex-col items-center">
             <div
               className={`w-full rounded-t ${
-                index % 2 === 0 ? "bg-yellow-400" : "bg-gray-700"
+                index % 2 === 0 ? "bg-yellow-400" : "bg-slate-400"
               }`}
               style={{ height: `${(value / maxHeight) * 100}%` }}
             ></div>
-            <span className="text-gray-400 text-xs mt-2">{labels[index]}</span>
+            <span className="text-slate-500 text-xs mt-2">{labels[index]}</span>
           </div>
         ))}
       </div>

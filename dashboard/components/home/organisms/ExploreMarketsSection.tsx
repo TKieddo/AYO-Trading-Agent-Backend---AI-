@@ -14,8 +14,8 @@ interface ExploreMarketsSectionProps {
 
 export function ExploreMarketsSection({ markets }: ExploreMarketsSectionProps) {
   return (
-    <div className="rounded-2xl bg-gray-900 p-6">
-      <h2 className="text-white text-lg font-semibold mb-4">Explore markets</h2>
+    <div className="rounded-2xl bg-white border border-black/10 p-6">
+      <h2 className="text-slate-900 text-lg font-semibold mb-4">Explore markets</h2>
       <div className="grid grid-cols-2 gap-4">
         {markets.map((market, index) => (
           <MarketPairCard
