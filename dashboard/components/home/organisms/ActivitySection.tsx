@@ -32,8 +32,8 @@ export function ActivitySection({
   };
 
   return (
-    <div className="rounded-2xl bg-white border border-black/10 p-6">
-      <h2 className="text-slate-900 text-lg font-semibold mb-4">Profit & Loss Over Time</h2>
+    <div className="rounded-2xl bg-white border border-black/10 p-4">
+      <h2 className="text-slate-900 text-base font-semibold mb-2">Profit & Loss Over Time</h2>
       
       <ToggleButtons
         options={["Crypto", "Forex"]}
@@ -43,7 +43,7 @@ export function ActivitySection({
 
       {currentData && (
         <>
-          <div className="mb-4 mt-6">
+          <div className="mb-2 mt-3">
             <BarChart
               data={currentData.data}
               labels={currentData.labels}
