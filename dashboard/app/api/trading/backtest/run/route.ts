@@ -1,6 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase/server";
 
+type StrategyRecord = {
+  id: string;
+  name: string;
+  description: string | null;
+  strategy_json: any;
+  status: string;
+  [key: string]: any;
+};
+
 /**
  * POST /api/trading/backtest/run
  * Run a backtest for a strategy
@@ -37,18 +46,20 @@ export async function POST(req: NextRequest) {
     }
 
     // Get strategy details
-    const { data: strategy, error: strategyError } = await supabase
+    const { data: strategyData, error: strategyError } = await supabase
       .from("strategies")
       .select("*")
       .eq("id", strategy_id)
       .single();
 
-    if (strategyError || !strategy) {
+    if (strategyError || !strategyData) {
       return NextResponse.json(
         { error: "Strategy not found" },
         { status: 404 }
       );
     }
+
+    const strategy = strategyData as StrategyRecord;
 
     // Call Python backtesting engine
     const pythonApiUrl = process.env.PYTHON_BACKTEST_API_URL || "http://localhost:8000";
