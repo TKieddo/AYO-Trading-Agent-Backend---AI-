@@ -70,15 +70,12 @@ export function HomeTemplate({
 }: HomeTemplateProps) {
   return (
     <div className="min-h-screen bg-[#e8eaec] flex flex-col">
-      {/* Hero Section - Full width, dark themed with pattern background */}
-      <div className="relative w-full">
+      {/* Hero Section - Full width, pure black with pattern background */}
+      <div className="relative w-full bg-black">
         {/* Pattern background for entire hero section */}
         <div className="absolute inset-0">
           <PatternBackground />
         </div>
-        
-        {/* Dark overlay - less opaque to show pattern */}
-        <div className="absolute inset-0 bg-gradient-to-br from-black via-slate-900 to-black"></div>
         
         {/* Topbar - Dark themed */}
         <div className="relative z-20">
