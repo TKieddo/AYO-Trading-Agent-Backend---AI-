@@ -22,6 +22,7 @@ interface TradeRow {
  * 
  * Caching: 10 seconds revalidation for period-based views to ensure fresh data
  */
+export const dynamic = 'force-dynamic'; // Mark as dynamic route (uses searchParams)
 export const revalidate = 10; // Cache for 10 seconds (reduced for accuracy)
 
 export async function GET(request: NextRequest) {

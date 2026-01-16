@@ -42,6 +42,7 @@ interface PerformanceResponse {
  * 
  * Caching: 10 seconds revalidation for fresh data
  */
+export const dynamic = 'force-dynamic'; // Mark as dynamic route
 export const revalidate = 10; // Cache for 10 seconds
 
 export async function GET() {
