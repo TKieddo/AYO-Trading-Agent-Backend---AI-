@@ -7,21 +7,18 @@ export default function HomePage() {
   const generateCryptoProfitLossData = () => {
     const data: number[] = [];
     const labels: string[] = [];
-    const today = new Date();
     
-    for (let i = 29; i >= 0; i--) {
-      const date = new Date(today);
-      date.setDate(date.getDate() - i);
-      
+    for (let i = 0; i < 30; i++) {
       // Generate realistic profit/loss values (can be positive or negative)
       // Simulate market volatility with some trends
       const baseValue = (Math.random() - 0.4) * 30000; // Can be negative
-      const trend = (29 - i) * 200; // Slight upward trend over time
+      const trend = i * 200; // Slight upward trend over time
       const volatility = (Math.random() - 0.5) * 8000;
       const profitLoss = baseValue + trend + volatility;
       
       data.push(profitLoss);
-      labels.push(date.getDate().toString());
+      // Sequential day labels: 1, 2, 3, ..., 30
+      labels.push((i + 1).toString());
     }
     
     const highValue = Math.max(...data);
@@ -35,20 +32,17 @@ export default function HomePage() {
   const generateForexProfitLossData = () => {
     const data: number[] = [];
     const labels: string[] = [];
-    const today = new Date();
     
-    for (let i = 29; i >= 0; i--) {
-      const date = new Date(today);
-      date.setDate(date.getDate() - i);
-      
+    for (let i = 0; i < 30; i++) {
       // Forex typically has smaller profit/loss values but more consistent
       const baseValue = (Math.random() - 0.3) * 20000; // Can be negative
-      const trend = (29 - i) * 100; // Gentle upward trend
+      const trend = i * 100; // Gentle upward trend
       const volatility = (Math.random() - 0.5) * 4000;
       const profitLoss = baseValue + trend + volatility;
       
       data.push(profitLoss);
-      labels.push(date.getDate().toString());
+      // Sequential day labels: 1, 2, 3, ..., 30
+      labels.push((i + 1).toString());
     }
     
     const highValue = Math.max(...data);
