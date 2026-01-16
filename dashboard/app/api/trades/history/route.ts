@@ -283,9 +283,10 @@ export async function GET(req: NextRequest) {
                 // Fallback: insert one by one to handle duplicates gracefully
                 for (const trade of newTrades) {
                   try {
-                    await sb.from("trades").insert(trade as any).catch(() => {
+                    const { error: tradeError } = await sb.from("trades").insert(trade as any);
+                    if (tradeError) {
                       // Ignore individual duplicate errors
-                    });
+                    }
                   } catch {}
                 }
               } else {
@@ -297,9 +298,10 @@ export async function GET(req: NextRequest) {
             // Optionally refresh the wins_losses_stats materialized view for performance
             // This is non-blocking and won't affect the API response
             try {
-              await sb.rpc("refresh_wins_losses_stats", {} as any).catch(() => {
+              const { error: rpcError } = await sb.rpc("refresh_wins_losses_stats", {} as any);
+              if (rpcError) {
                 // Silently fail if the function doesn't exist (older migrations)
-              });
+              }
             } catch {
               // Ignore errors - materialized view refresh is optional
             }
@@ -365,17 +367,19 @@ export async function GET(req: NextRequest) {
                 .not("pnl", "is", null);
               
               if (allTrades && Array.isArray(allTrades)) {
-                const totalPnL = allTrades.reduce((sum, t) => sum + (Number(t.pnl) || 0), 0);
-                const totalFees = allTrades.reduce((sum, t) => sum + (Number(t.fee) || 0), 0);
+                const typedTrades = allTrades as Array<{ pnl: any; fee: any; executed_at: string }>;
+                const totalPnL = typedTrades.reduce((sum, t) => sum + (Number(t.pnl) || 0), 0);
+                const totalFees = typedTrades.reduce((sum, t) => sum + (Number(t.fee) || 0), 0);
                 
-                await sb.from("account_metrics").insert({
+                const { error: metricsError } = await sb.from("account_metrics").insert({
                   total_pnl: totalPnL,
                   daily_pnl: 0, // Calculate separately
-                  total_trades: allTrades.length,
+                  total_trades: typedTrades.length,
                   timestamp: new Date().toISOString(),
-                } as any).catch(() => {
+                } as any);
+                if (metricsError) {
                   // Ignore duplicate timestamp errors
-                });
+                }
               }
             } catch {
               // Ignore errors - metrics update is optional

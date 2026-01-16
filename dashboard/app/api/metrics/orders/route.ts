@@ -52,9 +52,11 @@ export async function POST(req: NextRequest) {
         timestamp: new Date(timestamp).toISOString(),
       };
       
-      await sb.from("account_metrics").insert(metricsData as any).catch(() => {
+      const { error: insertError } = await sb.from("account_metrics").insert(metricsData as any);
+      if (insertError) {
         // Ignore duplicate timestamp errors
-      });
+        console.log("Skipped duplicate metrics entry:", insertError.message);
+      }
       
       return NextResponse.json({ ok: true, saved: true, fallback: true });
     }
