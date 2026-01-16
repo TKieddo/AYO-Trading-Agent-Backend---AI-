@@ -52,7 +52,7 @@ export async function POST(req: NextRequest) {
         timestamp: new Date(timestamp).toISOString(),
       };
       
-      await sb.from("account_metrics").insert(metricsData).catch(() => {
+      await sb.from("account_metrics").insert(metricsData as any).catch(() => {
         // Ignore duplicate timestamp errors
       });
       

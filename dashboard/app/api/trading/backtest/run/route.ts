@@ -112,7 +112,7 @@ export async function POST(req: NextRequest) {
           losing_trades: backtestResult.losing_trades || 0,
           avg_hold_time_hours: backtestResult.avg_hold_time_hours || 0,
           metrics_json: backtestResult,
-        })
+        } as any)
         .select()
         .single();
 

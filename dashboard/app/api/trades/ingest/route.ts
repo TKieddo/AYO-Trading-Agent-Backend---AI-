@@ -42,7 +42,7 @@ export async function POST(req: NextRequest) {
         executed_at: t.executed_at ?? new Date().toISOString(),
         order_id: t.order_id ?? null,
       }));
-      if (mappedTrades.length) await sb.from("trades").insert(mappedTrades);
+      if (mappedTrades.length) await sb.from("trades").insert(mappedTrades as any);
 
       // Update performance_series incrementally when pnl provided
       const pnlTrades = mappedTrades.filter((t) => t.pnl != null);

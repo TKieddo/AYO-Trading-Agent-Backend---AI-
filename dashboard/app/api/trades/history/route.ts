@@ -276,14 +276,14 @@ export async function GET(req: NextRequest) {
             // Use upsert with conflict resolution on a unique constraint if available
             // For now, use insert but catch duplicate errors
             try {
-              await sb.from("trades").insert(newTrades);
+              await sb.from("trades").insert(newTrades as any);
             } catch (insertError: any) {
               // If duplicate error, try upsert instead (if table has unique constraint)
               if (insertError.message?.includes('duplicate') || insertError.code === '23505') {
                 // Fallback: insert one by one to handle duplicates gracefully
                 for (const trade of newTrades) {
                   try {
-                    await sb.from("trades").insert(trade).catch(() => {
+                    await sb.from("trades").insert(trade as any).catch(() => {
                       // Ignore individual duplicate errors
                     });
                   } catch {}
@@ -297,7 +297,7 @@ export async function GET(req: NextRequest) {
             // Optionally refresh the wins_losses_stats materialized view for performance
             // This is non-blocking and won't affect the API response
             try {
-              await sb.rpc("refresh_wins_losses_stats").catch(() => {
+              await sb.rpc("refresh_wins_losses_stats", {} as any).catch(() => {
                 // Silently fail if the function doesn't exist (older migrations)
               });
             } catch {
@@ -373,7 +373,7 @@ export async function GET(req: NextRequest) {
                   daily_pnl: 0, // Calculate separately
                   total_trades: allTrades.length,
                   timestamp: new Date().toISOString(),
-                }).catch(() => {
+                } as any).catch(() => {
                   // Ignore duplicate timestamp errors
                 });
               }

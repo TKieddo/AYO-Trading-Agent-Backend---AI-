@@ -122,7 +122,7 @@ export async function persistLogs(rows: any[]) {
       data: l.data ?? null,
       timestamp: l.timestamp ?? new Date().toISOString(),
     }));
-    await supabase.from("trading_logs").insert(mapped);
+    await supabase.from("trading_logs").insert(mapped as any);
   } catch {}
 }
 
@@ -167,7 +167,7 @@ export async function persistMetrics(obj: any) {
       leverage: Number(obj.leverage ?? 1),
       timestamp: new Date().toISOString(),
     };
-    await supabase.from("account_metrics").insert(row);
+    await supabase.from("account_metrics").insert(row as any);
   } catch {}
 }
 

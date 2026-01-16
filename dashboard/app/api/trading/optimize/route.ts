@@ -60,7 +60,7 @@ export async function POST(req: NextRequest) {
         status: "pending",
         parameters_tested: [],
         started_at: new Date().toISOString(),
-      })
+      } as any)
       .select()
       .single();
 

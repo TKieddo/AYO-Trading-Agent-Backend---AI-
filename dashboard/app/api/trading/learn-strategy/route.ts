@@ -56,7 +56,7 @@ export async function POST(req: NextRequest) {
         source_video_url: mockStrategy.source_video_url,
         strategy_json: mockStrategy.strategy_json,
         status: mockStrategy.status,
-      })
+      } as any)
       .select()
       .single();
 
