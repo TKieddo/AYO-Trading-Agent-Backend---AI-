@@ -87,29 +87,21 @@ export function PerformanceSection({ data }: PerformanceSectionProps) {
 
         {/* Top Performing Strategies - Rounded Bordered Buttons */}
         {data.strategies && data.strategies.length > 0 ? (
-          <div className="flex flex-col gap-3 mb-6">
+          <div className="flex flex-wrap gap-3 mb-6">
             {data.strategies.map((strategy, index) => (
               <button
                 key={index}
-                className="w-full rounded-xl border-2 border-slate-200 hover:border-yellow-400 bg-white hover:bg-slate-50 transition-all duration-200 p-4 text-left"
+                className="inline-flex items-center gap-3 rounded-xl border-2 border-slate-200 hover:border-yellow-400 bg-white hover:bg-slate-50 transition-all duration-200 px-4 py-2"
               >
-                <div className="flex items-center justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-slate-900 font-bold text-base">{strategy.pair}</span>
-                      <span className="px-2 py-0.5 bg-green-100 text-green-700 rounded-full text-xs font-medium">
-                        {strategy.profitPercent}
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-4 text-xs text-slate-600">
-                      <span className="font-semibold text-green-600">{strategy.profit}</span>
-                      <span>{strategy.performance}</span>
-                    </div>
-                  </div>
-                  <svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                  </svg>
-                </div>
+                <span className="text-slate-900 font-bold text-sm whitespace-nowrap">{strategy.pair}</span>
+                <span className="px-2 py-0.5 bg-green-100 text-green-700 rounded-full text-xs font-medium whitespace-nowrap">
+                  {strategy.profitPercent}
+                </span>
+                <span className="font-semibold text-green-600 text-xs whitespace-nowrap">{strategy.profit}</span>
+                <span className="text-slate-600 text-xs whitespace-nowrap">{strategy.performance}</span>
+                <svg className="w-4 h-4 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
               </button>
             ))}
           </div>
