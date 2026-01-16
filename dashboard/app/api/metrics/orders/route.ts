@@ -38,7 +38,7 @@ export async function POST(req: NextRequest) {
         p_avg_fee_per_trade: feesAndProfit.avgFeePerTrade || 0,
         p_fee_to_pnl_ratio: feesAndProfit.feeToPnLRatio || 0,
         p_profit_margin: feesAndProfit.profitMargin || 0,
-      });
+      } as any);
       
       return NextResponse.json({ ok: true, saved: true });
     } catch (rpcError: any) {
