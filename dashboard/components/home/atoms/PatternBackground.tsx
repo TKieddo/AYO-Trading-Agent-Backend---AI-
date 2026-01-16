@@ -1,267 +1,127 @@
 export function PatternBackground() {
-  // Core symbols for the matrix-style pattern
-  const symbols = ['X', 'O', '+', '/', '\\', ':', '□', '.'];
+  // Crypto/trading symbols and elements
+  const symbols = ['X', 'O', '+', '/', '\\', ':', '-', '□', '▲', '▼', '●', '■'];
+  const cryptoPairs = ['BTC', 'ETH', 'SOL', 'USDT', 'BNB', 'ADA', 'XRP', 'DOGE'];
+  const numbers = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
   
   return (
     <div className="absolute inset-0 overflow-hidden pointer-events-none">
+      {/* SVG Pattern Layer - More visible */}
       <svg 
         className="absolute inset-0 w-full h-full"
-        viewBox="0 0 1000 1400"
+        viewBox="0 0 500 700"
         preserveAspectRatio="none"
         xmlns="http://www.w3.org/2000/svg"
       >
-        {/* Large L-shaped block - right side (prominent) */}
-        <rect x="750" y="100" width="200" height="400" fill="#84cc16" opacity="0.40" />
-        <rect x="750" y="100" width="400" height="80" fill="#84cc16" opacity="0.40" />
+        {/* Large geometric blocks - right side (VERY VISIBLE) */}
+        <rect x="320" y="40" width="100" height="140" fill="#84cc16" opacity="0.35" rx="6" />
+        <rect x="360" y="220" width="80" height="120" fill="#84cc16" opacity="0.30" rx="5" />
+        <rect x="340" y="420" width="110" height="100" fill="#84cc16" opacity="0.32" rx="6" />
+        <rect x="380" y="550" width="70" height="90" fill="#84cc16" opacity="0.28" rx="4" />
         
-        {/* Large rectangular blocks */}
-        <rect x="800" y="550" width="180" height="120" fill="#84cc16" opacity="0.35" />
-        <rect x="850" y="750" width="150" height="100" fill="#84cc16" opacity="0.38" />
-        <rect x="50" y="1100" width="200" height="150" fill="#84cc16" opacity="0.36" />
-        <rect x="200" y="1250" width="120" height="100" fill="#84cc16" opacity="0.34" />
+        {/* Bottom left blocks */}
+        <rect x="20" y="480" width="90" height="120" fill="#84cc16" opacity="0.35" rx="6" />
+        <rect x="40" y="580" width="60" height="80" fill="#84cc16" opacity="0.30" rx="4" />
         
-        {/* Horizontal rectangular blocks */}
-        <rect x="100" y="800" width="250" height="60" fill="#84cc16" opacity="0.37" />
-        <rect x="600" y="950" width="180" height="50" fill="#84cc16" opacity="0.35" />
+        {/* Crypto pair labels scattered - VERY VISIBLE */}
+        <text x="60" y="70" fontSize="11" fill="#84cc16" fontFamily="monospace" fontWeight="bold" opacity="0.50">BTC</text>
+        <text x="180" y="110" fontSize="10" fill="#84cc16" fontFamily="monospace" opacity="0.45">ETH</text>
+        <text x="250" y="160" fontSize="12" fill="#84cc16" fontFamily="monospace" fontWeight="bold" opacity="0.55">SOL</text>
+        <text x="120" y="240" fontSize="9" fill="#84cc16" fontFamily="monospace" opacity="0.40">USDT</text>
+        <text x="280" y="280" fontSize="11" fill="#84cc16" fontFamily="monospace" opacity="0.48">BNB</text>
+        <text x="90" y="340" fontSize="10" fill="#84cc16" fontFamily="monospace" opacity="0.42">XRP</text>
+        <text x="200" y="390" fontSize="13" fill="#84cc16" fontFamily="monospace" fontWeight="bold" opacity="0.52">ADA</text>
+        <text x="140" y="500" fontSize="10" fill="#84cc16" fontFamily="monospace" opacity="0.46">DOGE</text>
         
-        {/* Dense symbol grid - creating matrix effect */}
-        {/* Top section - dense cluster */}
-        {Array.from({ length: 25 }).map((_, i) => {
-          const x = 50 + (i % 5) * 80;
-          const y = 50 + Math.floor(i / 5) * 60;
-          const symbol = symbols[i % symbols.length];
-          return (
-            <text 
-              key={`top-${i}`} 
-              x={x} 
-              y={y} 
-              fontSize="10" 
-              fill="#84cc16" 
-              fontFamily="monospace" 
-              fontWeight={i % 3 === 0 ? "bold" : "normal"}
-              opacity={0.5 + (i % 3) * 0.1}
-            >
-              {symbol}
-            </text>
-          );
-        })}
+        {/* Brand name and Forex - VERY VISIBLE */}
+        <text x="220" y="80" fontSize="18" fill="#84cc16" fontFamily="monospace" fontWeight="bold" opacity="0.60">AYO</text>
+        <text x="320" y="140" fontSize="16" fill="#84cc16" fontFamily="monospace" fontWeight="bold" opacity="0.56">FOREX</text>
+        <text x="50" y="420" fontSize="17" fill="#84cc16" fontFamily="monospace" fontWeight="bold" opacity="0.54">AYO</text>
+        <text x="380" y="480" fontSize="15" fill="#84cc16" fontFamily="monospace" fontWeight="bold" opacity="0.50">FOREX</text>
+        <text x="150" y="250" fontSize="19" fill="#84cc16" fontFamily="monospace" fontWeight="bold" opacity="0.58">AYO</text>
+        <text x="280" y="380" fontSize="16" fill="#84cc16" fontFamily="monospace" fontWeight="bold" opacity="0.52">FOREX</text>
         
-        {/* Middle-left dense cluster */}
-        {Array.from({ length: 30 }).map((_, i) => {
-          const x = 80 + (i % 6) * 70;
-          const y = 400 + Math.floor(i / 6) * 50;
-          const symbol = symbols[(i * 3) % symbols.length];
-          return (
-            <text 
-              key={`mid-left-${i}`} 
-              x={x} 
-              y={y} 
-              fontSize="9" 
-              fill="#84cc16" 
-              fontFamily="monospace" 
-              fontWeight={i % 4 === 0 ? "bold" : "normal"}
-              opacity={0.45 + (i % 4) * 0.08}
-            >
-              {symbol}
-            </text>
-          );
-        })}
+        {/* Price-like numbers scattered - MORE VISIBLE */}
+        <text x="350" y="100" fontSize="9" fill="#84cc16" fontFamily="monospace" opacity="0.36">$42,150</text>
+        <text x="50" y="200" fontSize="8" fill="#84cc16" fontFamily="monospace" opacity="0.32">$2,850</text>
+        <text x="220" y="320" fontSize="10" fill="#84cc16" fontFamily="monospace" opacity="0.40">$98.50</text>
+        <text x="100" y="450" fontSize="9" fill="#84cc16" fontFamily="monospace" opacity="0.34">$0.52</text>
+        <text x="300" y="520" fontSize="8" fill="#84cc16" fontFamily="monospace" opacity="0.30">$315</text>
         
-        {/* Center area - mixed density */}
-        {Array.from({ length: 40 }).map((_, i) => {
-          const x = 300 + (i % 8) * 60;
-          const y = 500 + Math.floor(i / 8) * 55;
-          const symbol = symbols[(i * 5) % symbols.length];
-          return (
-            <text 
-              key={`center-${i}`} 
-              x={x} 
-              y={y} 
-              fontSize={8 + (i % 3)} 
-              fill="#84cc16" 
-              fontFamily="monospace" 
-              fontWeight={i % 5 === 0 ? "bold" : "normal"}
-              opacity={0.4 + (i % 5) * 0.06}
-            >
-              {symbol}
-            </text>
-          );
-        })}
+        {/* Scattered symbols - VERY VISIBLE */}
+        <text x="45" y="85" fontSize="18" fill="#84cc16" fontFamily="monospace" fontWeight="bold" opacity="0.60">X</text>
+        <text x="160" y="130" fontSize="15" fill="#84cc16" fontFamily="monospace" opacity="0.50">O</text>
+        <text x="230" y="190" fontSize="20" fill="#84cc16" fontFamily="monospace" fontWeight="bold" opacity="0.64">+</text>
+        <text x="110" y="260" fontSize="13" fill="#84cc16" fontFamily="monospace" opacity="0.44">/</text>
+        <text x="270" y="310" fontSize="16" fill="#84cc16" fontFamily="monospace" opacity="0.52">\</text>
+        <text x="85" y="360" fontSize="14" fill="#84cc16" fontFamily="monospace" opacity="0.48">:</text>
+        <text x="190" y="410" fontSize="19" fill="#84cc16" fontFamily="monospace" fontWeight="bold" opacity="0.56">▲</text>
+        <text x="130" y="510" fontSize="15" fill="#84cc16" fontFamily="monospace" opacity="0.50">▼</text>
+        <text x="240" y="560" fontSize="17" fill="#84cc16" fontFamily="monospace" fontWeight="bold" opacity="0.54">●</text>
+        <text x="360" y="180" fontSize="14" fill="#84cc16" fontFamily="monospace" opacity="0.46">■</text>
+        <text x="70" y="300" fontSize="16" fill="#84cc16" fontFamily="monospace" opacity="0.52">+</text>
         
-        {/* Right side scattered symbols */}
-        {Array.from({ length: 20 }).map((_, i) => {
-          const x = 600 + (i % 4) * 90;
-          const y = 200 + Math.floor(i / 4) * 80;
-          const symbol = symbols[(i * 7) % symbols.length];
-          return (
-            <text 
-              key={`right-${i}`} 
-              x={x} 
-              y={y} 
-              fontSize="11" 
-              fill="#84cc16" 
-              fontFamily="monospace" 
-              fontWeight={i % 3 === 0 ? "bold" : "normal"}
-              opacity={0.48 + (i % 3) * 0.05}
-            >
-              {symbol}
-            </text>
-          );
-        })}
-        
-        {/* Bottom section - dense pattern */}
-        {Array.from({ length: 35 }).map((_, i) => {
-          const x = 150 + (i % 7) * 75;
-          const y = 1000 + Math.floor(i / 7) * 50;
-          const symbol = symbols[(i * 2) % symbols.length];
-          return (
-            <text 
-              key={`bottom-${i}`} 
-              x={x} 
-              y={y} 
-              fontSize="10" 
-              fill="#84cc16" 
-              fontFamily="monospace" 
-              fontWeight={i % 4 === 0 ? "bold" : "normal"}
-              opacity={0.42 + (i % 4) * 0.07}
-            >
-              {symbol}
-            </text>
-          );
-        })}
-        
-        {/* Scattered individual symbols - random placement */}
-        {[
-          { x: 120, y: 180, symbol: 'X', size: 14, bold: true, opacity: 0.55 },
-          { x: 280, y: 250, symbol: 'O', size: 12, bold: false, opacity: 0.50 },
-          { x: 450, y: 320, symbol: '+', size: 16, bold: true, opacity: 0.58 },
-          { x: 180, y: 450, symbol: '/', size: 11, bold: false, opacity: 0.48 },
-          { x: 520, y: 380, symbol: '\\', size: 13, bold: false, opacity: 0.52 },
-          { x: 250, y: 550, symbol: ':', size: 10, bold: false, opacity: 0.46 },
-          { x: 480, y: 600, symbol: '□', size: 12, bold: true, opacity: 0.54 },
-          { x: 150, y: 700, symbol: '.', size: 8, bold: false, opacity: 0.44 },
-          { x: 380, y: 750, symbol: 'X', size: 15, bold: true, opacity: 0.56 },
-          { x: 550, y: 820, symbol: 'O', size: 13, bold: false, opacity: 0.50 },
-          { x: 220, y: 900, symbol: '+', size: 14, bold: true, opacity: 0.54 },
-          { x: 420, y: 1050, symbol: '/', size: 11, bold: false, opacity: 0.48 },
-          { x: 320, y: 1150, symbol: '\\', size: 12, bold: false, opacity: 0.50 },
-          { x: 580, y: 1200, symbol: ':', size: 10, bold: false, opacity: 0.46 },
-          { x: 180, y: 1300, symbol: '□', size: 13, bold: true, opacity: 0.52 },
-        ].map((item, i) => (
-          <text 
-            key={`scatter-${i}`}
-            x={item.x} 
-            y={item.y} 
-            fontSize={item.size} 
-            fill="#84cc16" 
-            fontFamily="monospace" 
-            fontWeight={item.bold ? "bold" : "normal"}
-            opacity={item.opacity}
-          >
-            {item.symbol}
-          </text>
-        ))}
-        
-        {/* Dense clusters of same symbol - creating texture blocks */}
-        {/* X cluster */}
-        <g opacity="0.45">
-          {Array.from({ length: 12 }).map((_, i) => (
-            <text 
-              key={`x-cluster-${i}`}
-              x={350 + (i % 4) * 15} 
-              y={200 + Math.floor(i / 4) * 20} 
-              fontSize="9" 
-              fill="#84cc16" 
-              fontFamily="monospace" 
-              fontWeight="bold"
-            >
-              X
-            </text>
-          ))}
-        </g>
-        
-        {/* O cluster */}
-        <g opacity="0.42">
-          {Array.from({ length: 15 }).map((_, i) => (
-            <text 
-              key={`o-cluster-${i}`}
-              x={500 + (i % 5) * 18} 
-              y={650 + Math.floor(i / 5) * 22} 
-              fontSize="10" 
-              fill="#84cc16" 
-              fontFamily="monospace"
-            >
-              O
-            </text>
-          ))}
-        </g>
-        
-        {/* Slash cluster - creating flow effect */}
+        {/* Dense symbol clusters - MORE VISIBLE */}
         <g opacity="0.40">
-          {Array.from({ length: 20 }).map((_, i) => (
-            <text 
-              key={`slash-cluster-${i}`}
-              x={100 + (i % 10) * 12} 
-              y={300 + Math.floor(i / 10) * 15} 
-              fontSize="8" 
-              fill="#84cc16" 
-              fontFamily="monospace"
-            >
-              /
-            </text>
-          ))}
+          <text x="330" y="120" fontSize="11" fill="#84cc16" fontFamily="monospace" fontWeight="bold">X</text>
+          <text x="345" y="120" fontSize="10" fill="#84cc16" fontFamily="monospace">O</text>
+          <text x="360" y="120" fontSize="12" fill="#84cc16" fontFamily="monospace" fontWeight="bold">+</text>
+          <text x="375" y="120" fontSize="11" fill="#84cc16" fontFamily="monospace">/</text>
+          <text x="390" y="120" fontSize="10" fill="#84cc16" fontFamily="monospace">\</text>
         </g>
         
-        {/* Dot cluster - pixel-like effect */}
-        <g opacity="0.38">
-          {Array.from({ length: 25 }).map((_, i) => (
-            <text 
-              key={`dot-cluster-${i}`}
-              x={600 + (i % 5) * 20} 
-              y={1100 + Math.floor(i / 5) * 18} 
-              fontSize="7" 
-              fill="#84cc16" 
-              fontFamily="monospace"
-            >
-              .
-            </text>
-          ))}
+        <g opacity="0.44">
+          <text x="30" y="220" fontSize="10" fill="#84cc16" fontFamily="monospace" fontWeight="bold">X</text>
+          <text x="42" y="220" fontSize="9" fill="#84cc16" fontFamily="monospace">O</text>
+          <text x="54" y="220" fontSize="10" fill="#84cc16" fontFamily="monospace" fontWeight="bold">X</text>
+          <text x="66" y="220" fontSize="9" fill="#84cc16" fontFamily="monospace">O</text>
+          <text x="78" y="220" fontSize="10" fill="#84cc16" fontFamily="monospace">+</text>
         </g>
         
-        {/* Branding - AYO and FOREX scattered */}
-        <text x="400" y="150" fontSize="22" fill="#84cc16" fontFamily="monospace" fontWeight="bold" opacity="0.65">AYO</text>
-        <text x="700" y="300" fontSize="20" fill="#84cc16" fontFamily="monospace" fontWeight="bold" opacity="0.60">FOREX</text>
-        <text x="200" y="600" fontSize="24" fill="#84cc16" fontFamily="monospace" fontWeight="bold" opacity="0.62">AYO</text>
-        <text x="550" y="850" fontSize="18" fill="#84cc16" fontFamily="monospace" fontWeight="bold" opacity="0.58">FOREX</text>
-        <text x="300" y="1050" fontSize="21" fill="#84cc16" fontFamily="monospace" fontWeight="bold" opacity="0.60">AYO</text>
-        <text x="650" y="1300" fontSize="19" fill="#84cc16" fontFamily="monospace" fontWeight="bold" opacity="0.58">FOREX</text>
+        <g opacity="0.36">
+          <text x="380" y="350" fontSize="11" fill="#84cc16" fontFamily="monospace">▲</text>
+          <text x="395" y="350" fontSize="10" fill="#84cc16" fontFamily="monospace">▼</text>
+          <text x="410" y="350" fontSize="11" fill="#84cc16" fontFamily="monospace">●</text>
+          <text x="425" y="350" fontSize="10" fill="#84cc16" fontFamily="monospace">■</text>
+        </g>
         
-        {/* Additional scattered symbols for randomness */}
-        {Array.from({ length: 50 }).map((_, i) => {
-          const x = (i * 137) % 900 + 50;
-          const y = (i * 211) % 1200 + 100;
-          const symbol = symbols[(i * 13) % symbols.length];
-          const size = 7 + (i % 4);
-          return (
-            <text 
-              key={`random-${i}`}
-              x={x} 
-              y={y} 
-              fontSize={size} 
-              fill="#84cc16" 
-              fontFamily="monospace" 
-              fontWeight={i % 7 === 0 ? "bold" : "normal"}
-              opacity={0.35 + (i % 6) * 0.05}
-            >
-              {symbol}
-            </text>
-          );
-        })}
+        {/* Circuit-like connecting lines - MORE VISIBLE */}
+        <g stroke="#84cc16" strokeWidth="2" opacity="0.30" fill="none">
+          <path d="M 50 100 L 150 125 L 200 85 L 250 105 L 300 95" />
+          <path d="M 100 300 L 180 285 L 220 325 L 280 305 L 340 295" />
+          <path d="M 150 450 L 200 435 L 250 475 L 300 455 L 360 445" />
+          <path d="M 80 200 L 120 180 L 160 220" />
+        </g>
+        
+        {/* Trading chart-like elements - MORE VISIBLE */}
+        <g stroke="#84cc16" strokeWidth="2.5" opacity="0.24" fill="none">
+          {/* Candlestick-like shapes */}
+          <line x1="380" y1="250" x2="380" y2="280" />
+          <rect x="375" y="250" width="10" height="8" fill="#84cc16" opacity="0.20" />
+          <line x1="420" y1="380" x2="420" y2="410" />
+          <rect x="415" y="380" width="10" height="12" fill="#84cc16" opacity="0.20" />
+        </g>
+        
+        {/* Small geometric shapes - MORE VISIBLE */}
+        <rect x="360" y="160" width="10" height="10" fill="#84cc16" opacity="0.44" rx="2" />
+        <rect x="75" y="290" width="12" height="12" fill="#84cc16" opacity="0.40" rx="2" />
+        <circle cx="185" cy="385" r="6" fill="#84cc16" opacity="0.48" />
+        <circle cx="285" cy="430" r="5" fill="#84cc16" opacity="0.42" />
+        <rect x="400" y="480" width="8" height="8" fill="#84cc16" opacity="0.38" rx="1" />
+        <circle cx="55" cy="540" r="4" fill="#84cc16" opacity="0.36" />
+        
+        {/* Percentage signs scattered - MORE VISIBLE */}
+        <text x="170" y="150" fontSize="12" fill="#84cc16" fontFamily="monospace" opacity="0.38">%</text>
+        <text x="290" y="240" fontSize="11" fill="#84cc16" fontFamily="monospace" opacity="0.34">%</text>
+        <text x="150" y="380" fontSize="13" fill="#84cc16" fontFamily="monospace" opacity="0.42">%</text>
+        <text x="320" y="460" fontSize="12" fill="#84cc16" fontFamily="monospace" opacity="0.36">%</text>
       </svg>
       
-      {/* Subtle glow effects */}
-      <div className="absolute top-0 right-0 w-96 h-96 bg-lime-400/20 rounded-full blur-3xl"></div>
-      <div className="absolute bottom-0 left-0 w-72 h-72 bg-lime-500/18 rounded-full blur-2xl"></div>
+      {/* Enhanced glow effects - VERY VISIBLE */}
+      <div className="absolute top-0 right-0 w-80 h-80 bg-lime-400/25 rounded-full blur-3xl"></div>
+      <div className="absolute bottom-0 left-0 w-60 h-60 bg-lime-500/25 rounded-full blur-2xl"></div>
+      <div className="absolute top-1/2 right-1/4 w-40 h-40 bg-lime-300/20 rounded-full blur-xl"></div>
+      <div className="absolute top-1/3 left-1/3 w-50 h-50 bg-lime-400/18 rounded-full blur-2xl"></div>
     </div>
   );
 }
