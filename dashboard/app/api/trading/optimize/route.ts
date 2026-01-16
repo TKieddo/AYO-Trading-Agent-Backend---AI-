@@ -1,6 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase/server";
 
+type BacktestRecord = {
+  id: string;
+  total_return: number;
+  [key: string]: any;
+};
+
+type OptimizationRecord = {
+  id: string;
+  strategy_id: string;
+  status: string;
+  [key: string]: any;
+};
+
 /**
  * POST /api/trading/optimize
  * Start strategy optimization
@@ -34,21 +47,23 @@ export async function POST(req: NextRequest) {
     }
 
     // Get original backtest result
-    const { data: backtest, error: backtestError } = await supabase
+    const { data: backtestData, error: backtestError } = await supabase
       .from("backtest_results")
       .select("total_return")
       .eq("id", backtest_id)
       .single();
 
-    if (backtestError || !backtest) {
+    if (backtestError || !backtestData) {
       return NextResponse.json(
         { error: "Backtest not found" },
         { status: 404 }
       );
     }
 
+    const backtest = backtestData as BacktestRecord;
+
     // Create optimization record
-    const { data: optimization, error: optError } = await supabase
+    const { data: optimizationData, error: optError } = await supabase
       .from("strategy_optimizations")
       .insert({
         strategy_id,
@@ -64,13 +79,15 @@ export async function POST(req: NextRequest) {
       .select()
       .single();
 
-    if (optError) {
+    if (optError || !optimizationData) {
       console.error("Error creating optimization:", optError);
       return NextResponse.json(
-        { error: optError.message || "Failed to create optimization" },
+        { error: optError?.message || "Failed to create optimization" },
         { status: 500 }
       );
     }
+
+    const optimization = optimizationData as OptimizationRecord;
 
     // TODO: Trigger Python optimization process
     // This would call your Python backtesting/optimization service
