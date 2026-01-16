@@ -3,72 +3,8 @@
 import { HomeTemplate } from "@/components/home/templates/HomeTemplate";
 
 export default function HomePage() {
-  // Performance data
-  const performanceData = {
-    total: "12,7898.00",
-    period: "Past Week",
-    change: "0.004567%",
-    metrics: [
-      {
-        icon: <span className="text-black font-bold text-lg">$</span>,
-        iconVariant: "yellow" as const,
-        value: "$ 15.000",
-        label: "Ballance"
-      },
-      {
-        icon: <span className="text-black font-bold">A</span>,
-        iconVariant: "white" as const,
-        value: "$ 7.300",
-        label: "Leverage"
-      },
-      {
-        icon: (
-          <svg className="w-5 h-5 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-        ),
-        iconVariant: "white" as const,
-        value: "$ 211.200",
-        label: "Margin Usage",
-        progress: 75
-      }
-    ]
-  };
-
-  // Markets data
-  const marketsData = [
-    {
-      pair: ["Origin", "SNX"],
-      changePercent: "0.0067%",
-      value: "USD 00,160.10",
-      sliderValue: 33,
-      price: "$ 1.02"
-    },
-    {
-      pair: ["Tether", "XRP"],
-      changePercent: "0.4567%",
-      value: "USD 13,160.10",
-      sliderValue: 67,
-      price: "$ 2.50"
-    },
-    {
-      pair: ["Tether", "XRP"],
-      changePercent: "0.4567%",
-      value: "USD 52,160.10",
-      sliderValue: 80,
-      price: "$ 3.75"
-    },
-    {
-      pair: ["Ethereum", "ETH"],
-      changePercent: "0.4567%",
-      value: "USD 00,001.10",
-      sliderValue: 20,
-      price: "$ 0.50"
-    }
-  ];
-
-  // Right column data
-  const rightColumnData = {
+  // Right sidebar data
+  const rightSidebarData = {
     progressValue: 60,
     progressLabel: "WETH/USDC",
     activityChartData: {
@@ -116,11 +52,75 @@ export default function HomePage() {
     ]
   };
 
+  // Performance data
+  const performanceData = {
+    total: "12,7898.00",
+    period: "Past Week",
+    change: "0.004567%",
+    metrics: [
+      {
+        icon: <span className="text-black font-bold text-lg">$</span>,
+        iconVariant: "yellow" as const,
+        value: "$ 15.000",
+        label: "Ballance"
+      },
+      {
+        icon: <span className="text-black font-bold">A</span>,
+        iconVariant: "white" as const,
+        value: "$ 7.300",
+        label: "Leverage"
+      },
+      {
+        icon: (
+          <svg className="w-5 h-5 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+        ),
+        iconVariant: "white" as const,
+        value: "$ 211.200",
+        label: "Margin Usage",
+        progress: 75
+      }
+    ],
+    rightSidebar: rightSidebarData
+  };
+
+  // Markets data
+  const marketsData = [
+    {
+      pair: ["Origin", "SNX"],
+      changePercent: "0.0067%",
+      value: "USD 00,160.10",
+      sliderValue: 33,
+      price: "$ 1.02"
+    },
+    {
+      pair: ["Tether", "XRP"],
+      changePercent: "0.4567%",
+      value: "USD 13,160.10",
+      sliderValue: 67,
+      price: "$ 2.50"
+    },
+    {
+      pair: ["Tether", "XRP"],
+      changePercent: "0.4567%",
+      value: "USD 52,160.10",
+      sliderValue: 80,
+      price: "$ 3.75"
+    },
+    {
+      pair: ["Ethereum", "ETH"],
+      changePercent: "0.4567%",
+      value: "USD 00,001.10",
+      sliderValue: 20,
+      price: "$ 0.50"
+    }
+  ];
+
   return (
     <HomeTemplate
       performanceData={performanceData}
       marketsData={marketsData}
-      rightColumnData={rightColumnData}
     />
   );
 }
