@@ -1,5 +1,13 @@
 import { getServerSupabase } from "@/lib/supabase/server";
 
+type PositionRecord = {
+  id: string;
+  symbol: string;
+  side: string;
+  size: number;
+  [key: string]: any;
+};
+
 export async function persistPrices(rows: any[]) {
   const supabase = getServerSupabase();
   if (!supabase || !Array.isArray(rows) || rows.length === 0) return;
@@ -61,15 +69,16 @@ export async function persistPositions(rows: any[]) {
     await query.update(updateData).is("closed_at", null).eq("size", 0);
 
     // Fetch all existing open positions to compare
-    const existingPositions = await supabase
+    const { data: existingPositionsData } = await supabase
       .from("positions")
       .select("id, symbol, side, size")
       .is("closed_at", null)
       .gt("size", 0);
 
-    if (existingPositions.data) {
+    if (existingPositionsData) {
+      const existingPositions = existingPositionsData as PositionRecord[];
       const toClose: string[] = [];
-      for (const existing of existingPositions.data) {
+      for (const existing of existingPositions) {
         // If this position is not in the current open positions list, it was closed
         // This handles cases where:
         // 1. A position was closed and a new one opened with same symbol:side (different ID)
