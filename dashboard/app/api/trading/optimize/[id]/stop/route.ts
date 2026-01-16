@@ -25,7 +25,7 @@ export async function POST(
         status: "stopped",
         stopped_reason: "User requested stop",
         completed_at: new Date().toISOString(),
-      })
+      } as any)
       .eq("id", id)
       .select()
       .single();

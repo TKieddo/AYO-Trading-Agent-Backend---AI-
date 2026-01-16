@@ -181,7 +181,7 @@ export async function GET(req: NextRequest) {
             .update({ 
               status: "filled",
               updated_at: new Date().toISOString(),
-            })
+            } as any)
             .in("order_id", closedOrders);
           console.log(`Marked ${closedOrders.length} orders as filled`);
         }
