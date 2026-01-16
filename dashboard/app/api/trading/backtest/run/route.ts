@@ -126,10 +126,8 @@ export async function POST(req: NextRequest) {
 
       // Update strategy status to "backtested"
       const updateData: any = { status: "backtested", updated_at: new Date().toISOString() };
-      await (supabase
-        .from("strategies")
-        .update(updateData as any) as any)
-        .eq("id", strategy_id);
+      const query = supabase.from("strategies") as any;
+      await query.update(updateData).eq("id", strategy_id);
 
       return NextResponse.json({
         success: true,
