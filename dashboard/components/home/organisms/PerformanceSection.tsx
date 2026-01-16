@@ -124,23 +124,23 @@ export function PerformanceSection({ data }: PerformanceSectionProps) {
         </div>
 
         {/* Tab Buttons */}
-        <div className="flex gap-2 mb-4">
+        <div className="inline-flex gap-1 rounded-lg border border-slate-200 p-1 mb-4 w-fit">
           <button
             onClick={() => setActiveTab("crypto")}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
+            className={`px-3 py-1 rounded-md text-xs font-medium transition-all duration-200 ${
               activeTab === "crypto"
-                ? "bg-yellow-400 text-slate-900 border-2 border-yellow-400"
-                : "bg-slate-100 text-slate-600 border-2 border-transparent hover:bg-slate-200"
+                ? "bg-yellow-400 text-slate-900"
+                : "bg-transparent text-slate-600 hover:bg-slate-100"
             }`}
           >
             Crypto
           </button>
           <button
             onClick={() => setActiveTab("forex")}
-            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
+            className={`px-3 py-1 rounded-md text-xs font-medium transition-all duration-200 ${
               activeTab === "forex"
-                ? "bg-yellow-400 text-slate-900 border-2 border-yellow-400"
-                : "bg-slate-100 text-slate-600 border-2 border-transparent hover:bg-slate-200"
+                ? "bg-yellow-400 text-slate-900"
+                : "bg-transparent text-slate-600 hover:bg-slate-100"
             }`}
           >
             Forex
