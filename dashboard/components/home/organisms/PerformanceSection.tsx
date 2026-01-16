@@ -87,19 +87,19 @@ export function PerformanceSection({ data }: PerformanceSectionProps) {
 
         {/* Top Performing Strategies - Rounded Bordered Buttons */}
         {data.strategies && data.strategies.length > 0 ? (
-          <div className="flex flex-wrap gap-3 mb-6">
+          <div className="flex flex-col gap-2 mb-6">
             {data.strategies.map((strategy, index) => (
               <button
                 key={index}
-                className="inline-flex items-center gap-3 rounded-xl border-2 border-slate-200 hover:border-yellow-400 bg-white hover:bg-slate-50 transition-all duration-200 px-4 py-2"
+                className="inline-flex items-center gap-2 rounded-lg border border-slate-200 hover:border-yellow-400 bg-white hover:bg-slate-50 transition-all duration-200 px-3 py-1.5 w-fit"
               >
-                <span className="text-slate-900 font-bold text-sm whitespace-nowrap">{strategy.pair}</span>
-                <span className="px-2 py-0.5 bg-green-100 text-green-700 rounded-full text-xs font-medium whitespace-nowrap">
+                <span className="text-slate-900 font-semibold text-xs whitespace-nowrap">{strategy.pair}</span>
+                <span className="px-1.5 py-0.5 bg-green-100 text-green-700 rounded-full text-[10px] font-medium whitespace-nowrap">
                   {strategy.profitPercent}
                 </span>
-                <span className="font-semibold text-green-600 text-xs whitespace-nowrap">{strategy.profit}</span>
-                <span className="text-slate-600 text-xs whitespace-nowrap">{strategy.performance}</span>
-                <svg className="w-4 h-4 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <span className="font-semibold text-green-600 text-[10px] whitespace-nowrap">{strategy.profit}</span>
+                <span className="text-slate-600 text-[10px] whitespace-nowrap">{strategy.performance}</span>
+                <svg className="w-3 h-3 text-slate-400 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                 </svg>
               </button>
