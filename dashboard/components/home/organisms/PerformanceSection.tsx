@@ -1,4 +1,5 @@
 import { MetricIcon } from "../atoms/MetricIcon";
+import { ActivitySection } from "./ActivitySection";
 
 interface PerformanceData {
   total: string;
@@ -79,7 +80,7 @@ export function PerformanceSection({ data }: PerformanceSectionProps) {
         </div>
 
         {/* Metric List - Vertical Format */}
-        <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-4 mb-6">
           {data.metrics.map((metric, index) => (
             <div key={index} className="flex items-center gap-3">
               <MetricIcon variant={metric.iconVariant}>
@@ -100,6 +101,13 @@ export function PerformanceSection({ data }: PerformanceSectionProps) {
             </div>
           ))}
         </div>
+
+        {/* Activity Section - Below metrics */}
+        {data.rightSidebar?.activityChartData && (
+          <ActivitySection 
+            chartData={data.rightSidebar.activityChartData} 
+          />
+        )}
       </div>
     </div>
   );
