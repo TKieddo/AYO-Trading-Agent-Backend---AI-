@@ -12,19 +12,10 @@ import { CardTitle } from "@/components/ui/card";
 import { OpenPositionsCompact } from "@/components/dashboard/OpenPositionsCompact";
 import { AiChat } from "@/components/ai/AiChat";
 import { ScrollTop } from "@/components/layout/ScrollTop";
-import Link from "next/link";
 
 export default function DashboardPage() {
   return (
     <div className="space-y-6 overflow-x-hidden">
-      {/* Landing Banner - Remove this after deployment */}
-      <div className="bg-gradient-to-r from-purple-600 to-blue-600 text-white p-4 rounded-lg text-center">
-        <p className="text-sm">
-          🚀 Platform deployed on Vercel | 
-          <Link href="/landing" className="underline ml-2">View Landing Page</Link>
-        </p>
-      </div>
-
       {/* Hero Section: Left PnL chart, Right Decisions */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 rounded-[24px] bg-white ring-1 ring-black/5 p-4">

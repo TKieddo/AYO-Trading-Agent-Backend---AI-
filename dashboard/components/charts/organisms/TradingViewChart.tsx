@@ -37,6 +37,8 @@ export function TradingViewChart({
 }: TradingViewChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const widgetRef = useRef<any>(null);
+  const retryTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const retryCountRef = useRef<number>(0);
   const [isLoaded, setIsLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -78,32 +80,55 @@ export function TradingViewChart({
       widgetRef.current = null;
       setIsLoaded(false);
     }
+    
+    // Clear any pending retry timeouts
+    if (retryTimeoutRef.current) {
+      clearTimeout(retryTimeoutRef.current);
+      retryTimeoutRef.current = null;
+    }
+    
+    // Reset retry counter
+    retryCountRef.current = 0;
     setError(null);
 
     // Create unique container ID
     const containerId = `tradingview_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     containerRef.current.id = containerId;
 
-    // Function to create widget
+    // Maximum retry attempts (50 retries × 100ms = 5 seconds max)
+    const MAX_RETRIES = 50;
+    const RETRY_DELAY = 100;
+
+    // Function to create widget with retry limit
     const createWidget = () => {
+      // Check retry limit
+      if (retryCountRef.current >= MAX_RETRIES) {
+        console.error("Maximum retry attempts reached. Failed to initialize TradingView widget.");
+        setError("Failed to load TradingView chart. Please refresh the page.");
+        return;
+      }
+
       // Double-check that container exists and is in the DOM
       if (!containerRef.current) {
-        console.warn("Container ref is null, retrying...");
-        setTimeout(createWidget, 100);
+        console.warn(`Container ref is null, retrying... (${retryCountRef.current + 1}/${MAX_RETRIES})`);
+        retryCountRef.current++;
+        retryTimeoutRef.current = setTimeout(createWidget, RETRY_DELAY);
         return;
       }
 
       // Verify the element is actually in the DOM
       if (!containerRef.current.parentNode) {
-        console.warn("Container element not in DOM, retrying...");
-        setTimeout(createWidget, 100);
+        console.warn(`Container element not in DOM, retrying... (${retryCountRef.current + 1}/${MAX_RETRIES})`);
+        retryCountRef.current++;
+        retryTimeoutRef.current = setTimeout(createWidget, RETRY_DELAY);
         return;
       }
       
       // Check if TradingView is available
       if (!(window as any).TradingView) {
-        console.warn("TradingView library not available, retrying...");
-        setTimeout(createWidget, 100);
+        console.warn(`TradingView library not available, retrying... (${retryCountRef.current + 1}/${MAX_RETRIES})`);
+        retryCountRef.current++;
+        retryTimeoutRef.current = setTimeout(createWidget, RETRY_DELAY);
         return;
       }
 
@@ -114,37 +139,41 @@ export function TradingViewChart({
         // Verify container still exists before creating widget
         const container = document.getElementById(containerId);
         if (!container || !container.parentNode) {
-          console.warn("Container not found in DOM, retrying...");
-          setTimeout(createWidget, 100);
+          console.warn(`Container not found in DOM, retrying... (${retryCountRef.current + 1}/${MAX_RETRIES})`);
+          retryCountRef.current++;
+          retryTimeoutRef.current = setTimeout(createWidget, RETRY_DELAY);
           return;
         }
         
-          widgetRef.current = new (window as any).TradingView.widget({
-            autosize: true,
+        // Reset retry counter on successful attempt
+        retryCountRef.current = 0;
+        
+        widgetRef.current = new (window as any).TradingView.widget({
+          autosize: true,
           symbol: formattedSymbol,
-            interval: tvTimeframe,
-            timezone: "Etc/UTC",
+          interval: tvTimeframe,
+          timezone: "Etc/UTC",
           theme: "dark",
-            style: "1",
-            locale: "en",
+          style: "1",
+          locale: "en",
           toolbar_bg: "#000000",
-            enable_publishing: false,
-            allow_symbol_change: true,
-            container_id: containerId,
-            hide_side_toolbar: false,
-            disabled_features: [
-              "use_localstorage_for_settings",
-              "volume_force_overlay",
-              "create_volume_indicator_by_default",
-            ],
+          enable_publishing: false,
+          allow_symbol_change: true,
+          container_id: containerId,
+          hide_side_toolbar: false,
+          disabled_features: [
+            "use_localstorage_for_settings",
+            "volume_force_overlay",
+            "create_volume_indicator_by_default",
+          ],
           enabled_features: [
             "study_templates",
             "side_toolbar_in_fullscreen_mode",
             "header_in_all_windows",
           ],
-            overrides: {
+          overrides: {
             "paneProperties.background": "#000000",
-              "paneProperties.backgroundType": "solid",
+            "paneProperties.backgroundType": "solid",
             "paneProperties.showPriceLine": true,
             "paneProperties.showVolumePane": false,
             // Dark mode candle colors
@@ -157,9 +186,9 @@ export function TradingViewChart({
           },
         });
         
-          setIsLoaded(true);
-        } catch (error) {
-          console.error("Error creating TradingView widget:", error);
+        setIsLoaded(true);
+      } catch (error) {
+        console.error("Error creating TradingView widget:", error);
         setError(`Failed to initialize TradingView chart. Symbol: ${formatSymbol(symbol)}`);
       }
     };
@@ -202,10 +231,19 @@ export function TradingViewChart({
     }
 
     return () => {
+      // Clear any pending retry timeouts
+      if (retryTimeoutRef.current) {
+        clearTimeout(retryTimeoutRef.current);
+        retryTimeoutRef.current = null;
+      }
+      
+      // Reset retry counter
+      retryCountRef.current = 0;
+      
       // Cleanup widget
       if (widgetRef.current && containerRef.current) {
         try {
-        containerRef.current.innerHTML = "";
+          containerRef.current.innerHTML = "";
         } catch (e) {
           // Ignore cleanup errors
         }
