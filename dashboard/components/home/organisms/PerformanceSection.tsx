@@ -44,6 +44,20 @@ interface PerformanceData {
       maxValue: string;
       title: string;
     };
+    cryptoProfitLossData?: {
+      data: number[];
+      labels: string[];
+      highValue: number;
+      lowValue: number;
+      totalProfit: number;
+    };
+    forexProfitLossData?: {
+      data: number[];
+      labels: string[];
+      highValue: number;
+      lowValue: number;
+      totalProfit: number;
+    };
     notifications?: Array<{
       icon: React.ReactNode;
       date: string;
@@ -192,9 +206,10 @@ export function PerformanceSection({ data }: PerformanceSectionProps) {
         ) : null}
 
         {/* Activity Section - Below metrics */}
-        {data.rightSidebar?.activityChartData && (
+        {(data.rightSidebar?.cryptoProfitLossData || data.rightSidebar?.forexProfitLossData) && (
           <ActivitySection 
-            chartData={data.rightSidebar.activityChartData} 
+            cryptoData={data.rightSidebar.cryptoProfitLossData}
+            forexData={data.rightSidebar.forexProfitLossData}
           />
         )}
       </div>

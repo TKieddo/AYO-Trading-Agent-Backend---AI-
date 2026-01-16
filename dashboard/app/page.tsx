@@ -3,16 +3,70 @@
 import { HomeTemplate } from "@/components/home/templates/HomeTemplate";
 
 export default function HomePage() {
+  // Generate 30 days of profit/loss data for Crypto
+  const generateCryptoProfitLossData = () => {
+    const data: number[] = [];
+    const labels: string[] = [];
+    const today = new Date();
+    
+    for (let i = 29; i >= 0; i--) {
+      const date = new Date(today);
+      date.setDate(date.getDate() - i);
+      
+      // Generate realistic profit/loss values (can be positive or negative)
+      // Simulate market volatility with some trends
+      const baseValue = (Math.random() - 0.4) * 30000; // Can be negative
+      const trend = (29 - i) * 200; // Slight upward trend over time
+      const volatility = (Math.random() - 0.5) * 8000;
+      const profitLoss = baseValue + trend + volatility;
+      
+      data.push(profitLoss);
+      labels.push(date.getDate().toString());
+    }
+    
+    const highValue = Math.max(...data);
+    const lowValue = Math.min(...data);
+    const totalProfit = data.reduce((sum, val) => sum + val, 0);
+    
+    return { data, labels, highValue, lowValue, totalProfit };
+  };
+
+  // Generate 30 days of profit/loss data for Forex
+  const generateForexProfitLossData = () => {
+    const data: number[] = [];
+    const labels: string[] = [];
+    const today = new Date();
+    
+    for (let i = 29; i >= 0; i--) {
+      const date = new Date(today);
+      date.setDate(date.getDate() - i);
+      
+      // Forex typically has smaller profit/loss values but more consistent
+      const baseValue = (Math.random() - 0.3) * 20000; // Can be negative
+      const trend = (29 - i) * 100; // Gentle upward trend
+      const volatility = (Math.random() - 0.5) * 4000;
+      const profitLoss = baseValue + trend + volatility;
+      
+      data.push(profitLoss);
+      labels.push(date.getDate().toString());
+    }
+    
+    const highValue = Math.max(...data);
+    const lowValue = Math.min(...data);
+    const totalProfit = data.reduce((sum, val) => sum + val, 0);
+    
+    return { data, labels, highValue, lowValue, totalProfit };
+  };
+
+  const cryptoProfitLossData = generateCryptoProfitLossData();
+  const forexProfitLossData = generateForexProfitLossData();
+
   // Right sidebar data
   const rightSidebarData = {
     progressValue: 60,
     progressLabel: "WETH/USDC",
-    activityChartData: {
-      data: [45, 60, 55, 70, 65],
-      labels: ["0.1", "0.2", "0.3", "0.4", "0.5"],
-      maxValue: "$ 8.900",
-      title: "At a Galence"
-    },
+    cryptoProfitLossData: cryptoProfitLossData,
+    forexProfitLossData: forexProfitLossData,
     notifications: [
       {
         icon: (
