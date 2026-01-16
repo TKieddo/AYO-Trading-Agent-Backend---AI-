@@ -57,29 +57,24 @@ export default function HomePage() {
     total: "12,7898.00",
     period: "Past Week",
     change: "0.004567%",
-    metrics: [
+    strategies: [
       {
-        icon: <span className="text-black font-bold text-lg">$</span>,
-        iconVariant: "yellow" as const,
-        value: "$ 15.000",
-        label: "Ballance"
+        pair: "ETH/USDC",
+        profit: "+$2,450.00",
+        profitPercent: "+12.5%",
+        performance: "High Performance"
       },
       {
-        icon: <span className="text-black font-bold">A</span>,
-        iconVariant: "white" as const,
-        value: "$ 7.300",
-        label: "Leverage"
+        pair: "BTC/USD",
+        profit: "+$5,890.00",
+        profitPercent: "+18.3%",
+        performance: "Excellent"
       },
       {
-        icon: (
-          <svg className="w-5 h-5 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-          </svg>
-        ),
-        iconVariant: "white" as const,
-        value: "$ 211.200",
-        label: "Margin Usage",
-        progress: 75
+        pair: "SOL/USD",
+        profit: "+$1,230.00",
+        profitPercent: "+8.7%",
+        performance: "Great Performance"
       }
     ],
     rightSidebar: rightSidebarData

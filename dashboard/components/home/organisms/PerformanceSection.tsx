@@ -5,7 +5,13 @@ interface PerformanceData {
   total: string;
   period: string;
   change: string;
-  metrics: Array<{
+  strategies?: Array<{
+    pair: string;
+    profit: string;
+    profitPercent: string;
+    performance: string;
+  }>;
+  metrics?: Array<{
     icon: React.ReactNode;
     iconVariant?: "yellow" | "white";
     value: string;
@@ -79,28 +85,57 @@ export function PerformanceSection({ data }: PerformanceSectionProps) {
           </div>
         </div>
 
-        {/* Metric List - Vertical Format */}
-        <div className="flex flex-col gap-4 mb-6">
-          {data.metrics.map((metric, index) => (
-            <div key={index} className="flex items-center gap-3">
-              <MetricIcon variant={metric.iconVariant}>
-                {metric.icon}
-              </MetricIcon>
-              <div className="flex-1">
-                <div className="text-slate-900 font-semibold text-lg mb-1">{metric.value}</div>
-                <div className="text-slate-500 text-xs">{metric.label}</div>
-                {metric.progress !== undefined && (
-                  <div className="h-1 bg-slate-200 rounded-full overflow-hidden mt-2">
-                    <div 
-                      className="h-full bg-slate-700 transition-all duration-300" 
-                      style={{ width: `${metric.progress}%` }}
-                    ></div>
+        {/* Top Performing Strategies - Rounded Bordered Buttons */}
+        {data.strategies && data.strategies.length > 0 ? (
+          <div className="flex flex-col gap-3 mb-6">
+            {data.strategies.map((strategy, index) => (
+              <button
+                key={index}
+                className="w-full rounded-xl border-2 border-slate-200 hover:border-yellow-400 bg-white hover:bg-slate-50 transition-all duration-200 p-4 text-left"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-slate-900 font-bold text-base">{strategy.pair}</span>
+                      <span className="px-2 py-0.5 bg-green-100 text-green-700 rounded-full text-xs font-medium">
+                        {strategy.profitPercent}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-4 text-xs text-slate-600">
+                      <span className="font-semibold text-green-600">{strategy.profit}</span>
+                      <span>{strategy.performance}</span>
+                    </div>
                   </div>
-                )}
+                  <svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                  </svg>
+                </div>
+              </button>
+            ))}
+          </div>
+        ) : data.metrics ? (
+          <div className="flex flex-col gap-4 mb-6">
+            {data.metrics.map((metric, index) => (
+              <div key={index} className="flex items-center gap-3">
+                <MetricIcon variant={metric.iconVariant}>
+                  {metric.icon}
+                </MetricIcon>
+                <div className="flex-1">
+                  <div className="text-slate-900 font-semibold text-lg mb-1">{metric.value}</div>
+                  <div className="text-slate-500 text-xs">{metric.label}</div>
+                  {metric.progress !== undefined && (
+                    <div className="h-1 bg-slate-200 rounded-full overflow-hidden mt-2">
+                      <div 
+                        className="h-full bg-slate-700 transition-all duration-300" 
+                        style={{ width: `${metric.progress}%` }}
+                      ></div>
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        ) : null}
 
         {/* Activity Section - Below metrics */}
         {data.rightSidebar?.activityChartData && (

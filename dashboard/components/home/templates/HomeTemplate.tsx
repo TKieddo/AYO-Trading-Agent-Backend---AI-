@@ -8,7 +8,13 @@ interface HomeTemplateProps {
     total: string;
     period: string;
     change: string;
-    metrics: Array<{
+    strategies?: Array<{
+      pair: string;
+      profit: string;
+      profitPercent: string;
+      performance: string;
+    }>;
+    metrics?: Array<{
       icon: React.ReactNode;
       iconVariant?: "yellow" | "white";
       value: string;
