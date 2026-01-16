@@ -124,7 +124,7 @@ export function PerformanceSection({ data }: PerformanceSectionProps) {
         </div>
 
         {/* Tab Buttons */}
-        <div className="inline-flex gap-1 rounded-lg border border-slate-200 p-1 mb-4 w-fit">
+        <div className="flex gap-1 rounded-lg border border-slate-200 p-1 mb-4 w-fit">
           <button
             onClick={() => setActiveTab("crypto")}
             className={`px-3 py-1 rounded-md text-xs font-medium transition-all duration-200 ${
