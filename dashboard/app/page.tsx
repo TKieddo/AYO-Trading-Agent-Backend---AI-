@@ -2,18 +2,28 @@
 
 import { HomeTemplate } from "@/components/home/templates/HomeTemplate";
 
+// Seeded random number generator for deterministic data
+function seededRandom(seed: number) {
+  let value = seed;
+  return () => {
+    value = (value * 9301 + 49297) % 233280;
+    return value / 233280;
+  };
+}
+
 export default function HomePage() {
   // Generate 30 days of profit/loss data for Crypto
   const generateCryptoProfitLossData = () => {
     const data: number[] = [];
     const labels: string[] = [];
+    const random = seededRandom(12345); // Fixed seed for crypto
     
     for (let i = 0; i < 30; i++) {
       // Generate realistic profit/loss values (can be positive or negative)
       // Simulate market volatility with some trends
-      const baseValue = (Math.random() - 0.4) * 30000; // Can be negative
+      const baseValue = (random() - 0.4) * 30000; // Can be negative
       const trend = i * 200; // Slight upward trend over time
-      const volatility = (Math.random() - 0.5) * 8000;
+      const volatility = (random() - 0.5) * 8000;
       const profitLoss = baseValue + trend + volatility;
       
       data.push(profitLoss);
@@ -32,12 +42,13 @@ export default function HomePage() {
   const generateForexProfitLossData = () => {
     const data: number[] = [];
     const labels: string[] = [];
+    const random = seededRandom(67890); // Fixed seed for forex
     
     for (let i = 0; i < 30; i++) {
       // Forex typically has smaller profit/loss values but more consistent
-      const baseValue = (Math.random() - 0.3) * 20000; // Can be negative
+      const baseValue = (random() - 0.3) * 20000; // Can be negative
       const trend = i * 100; // Gentle upward trend
-      const volatility = (Math.random() - 0.5) * 4000;
+      const volatility = (random() - 0.5) * 4000;
       const profitLoss = baseValue + trend + volatility;
       
       data.push(profitLoss);
