@@ -124,7 +124,7 @@ CONFIG = {
     "max_positions": _get_int("MAX_POSITIONS", 6),  # Maximum concurrent positions
     "position_sizing_mode": _get_env("POSITION_SIZING_MODE", "auto"),  # "auto", "fixed", "target_profit", or "margin"
     # LLM via DeepSeek API (replaces OpenRouter)
-    "deepseek_api_key": _get_env("DEEPSEEK_API_KEY", required=True),
+    "deepseek_api_key": _get_env("DEEPSEEK_API_KEY"),  # Optional - only needed for LLM trading decisions
     "deepseek_base_url": _get_env("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
     "llm_model": _get_env("LLM_MODEL", "deepseek-chat"),  # Options: deepseek-chat, deepseek-reasoner
     # DeepSeek-specific settings
