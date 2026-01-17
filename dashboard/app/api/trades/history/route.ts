@@ -25,24 +25,16 @@ function createTradeHash(trade: {
 }
 
 /**
- * Detect which exchange is configured based on environment variables
+ * Detect which exchanges are configured based on environment variables
+ * Returns an object with flags for each exchange
  */
-function getConfiguredExchange(): "aster" | "binance" | null {
+function getConfiguredExchanges(): { aster: boolean; binance: boolean } {
   // Check for Aster credentials
-  const hasAster = process.env.ASTER_USER_ADDRESS && process.env.ASTER_PRIVATE_KEY;
+  const hasAster = !!(process.env.ASTER_USER_ADDRESS && process.env.ASTER_PRIVATE_KEY);
   // Check for Binance credentials
-  const hasBinance = process.env.BINANCE_API_KEY && process.env.BINANCE_API_SECRET;
+  const hasBinance = !!(process.env.BINANCE_API_KEY && process.env.BINANCE_API_SECRET);
   
-  // Check EXCHANGE env var first
-  const exchangeEnv = process.env.EXCHANGE?.toLowerCase();
-  if (exchangeEnv === "aster" && hasAster) return "aster";
-  if (exchangeEnv === "binance" && hasBinance) return "binance";
-  
-  // Fallback to what's available
-  if (hasAster) return "aster";
-  if (hasBinance) return "binance";
-  
-  return null;
+  return { aster: hasAster, binance: hasBinance };
 }
 
 /**
@@ -92,17 +84,17 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Step 2: Sync from Exchange API (Aster or Binance) - priority
-    const configuredExchange = getConfiguredExchange();
+    // Step 2: Sync from Exchange APIs (Aster and/or Binance) - fetch from both if configured
+    const exchanges = getConfiguredExchanges();
     const asterEnv = getAsterEnv();
     const apiTrades: any[] = [];
     const tradesToSave: any[] = [];
-    let apiSource = "supabase";
+    const sources: string[] = [];
     
-    // Priority 1: Try Exchange API (Aster or Binance) based on configuration
-    if ((forceSync || supabaseTrades.length === 0)) {
+    // Fetch from both exchanges if both are configured
+    if (forceSync || supabaseTrades.length === 0) {
       // Try Aster API if configured
-      if (configuredExchange === "aster" && asterEnv) {
+      if (exchanges.aster && asterEnv) {
         try {
           console.log("Fetching trades from Aster API...");
           const asterApiTrades = await getAsterUserTrades(asterEnv, {
@@ -138,13 +130,13 @@ export async function GET(req: NextRequest) {
             const mappedTrade = {
               id: createTradeHash({
                 symbol,
-              side,
-              size,
-              price,
-              timestamp: executedAt,
-              tradeId: String(tradeId),
-              exchange: "aster",
-            }),
+                side,
+                size,
+                price,
+                timestamp: executedAt,
+                tradeId: String(tradeId),
+                exchange: "aster",
+              }),
               symbol,
               side: side as "buy" | "sell",
               size: Math.abs(size),
@@ -167,25 +159,25 @@ export async function GET(req: NextRequest) {
             });
           }
           
-          apiSource = "aster";
-          console.log(`Fetched ${apiTrades.length} trades from Aster API`);
+          sources.push("aster");
+          console.log(`Fetched ${asterApiTrades.length} trades from Aster API`);
         } catch (error: any) {
           console.error("Error fetching Aster API trades:", error.message || error);
         }
       }
       
-      // Try Binance API if configured (via Python backend)
-      if (configuredExchange === "binance") {
+      // Try Binance API if configured
+      // Note: Binance trades are stored in Supabase by the Python agent during trading
+      // We'll fetch them from Supabase, but we can also try to sync from Python backend if needed
+      if (exchanges.binance) {
         try {
-          console.log("Fetching trades from Binance API via Python backend...");
-          const pythonApiUrl = process.env.NEXT_PUBLIC_API_URL || process.env.API_URL || "http://localhost:5000";
-          
-          // Note: Binance trades are typically stored in Supabase by the Python agent
-          // If we need to fetch from Binance API directly, we'd need to add a helper function
-          // For now, we rely on Supabase which is populated by the Python agent
-          console.log("Binance trades should be in Supabase (populated by Python agent)");
+          console.log("Binance trades are stored in Supabase (populated by Python agent during trading)");
+          // Binance trades should already be in Supabase from the Python agent
+          // If we need to force sync, we could call the Python backend here
+          // For now, Supabase should have the latest Binance trades
+          sources.push("binance");
         } catch (error: any) {
-          console.error("Error fetching Binance trades:", error.message || error);
+          console.error("Error processing Binance trades:", error.message || error);
         }
       }
     }
@@ -367,7 +359,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({ 
       trades: uniqueTrades,
-      source: apiTrades.length > 0 ? (configuredExchange || "unknown") : "supabase",
+      source: sources.length > 0 ? sources.join(",") : "supabase",
       synced: apiTrades.length > 0,
     });
   } catch (error: any) {

@@ -45,13 +45,14 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Step 2: Fetch orders from Exchange API (Aster or Binance)
+    // Step 2: Fetch orders from Exchange APIs (Aster and/or Binance) - fetch from both if configured
     const asterEnv = getAsterEnv();
+    const hasBinance = !!(process.env.BINANCE_API_KEY && process.env.BINANCE_API_SECRET);
     const apiOrders: any[] = [];
     const ordersToSave: any[] = [];
+    const sources: string[] = [];
     
-    // Priority 1: Try Aster API first (uses same wallet credentials as trading agent)
-    // Always fetch from Aster if credentials are available to get complete order history
+    // Priority 1: Try Aster API if configured
     if (asterEnv) {
       try {
         console.log("Fetching orders from Aster API...");
@@ -141,9 +142,21 @@ export async function GET(req: NextRequest) {
           });
         }
         
+        sources.push("aster");
         console.log(`Fetched ${apiOrders.length} orders from Aster API`);
       } catch (error: any) {
         console.error("Error fetching Aster API orders:", error.message || error);
+      }
+    }
+    
+    // Priority 2: Binance orders are stored in Supabase by the Python agent
+    // They should already be in Supabase from the Python agent during trading
+    if (hasBinance) {
+      try {
+        console.log("Binance orders are stored in Supabase (populated by Python agent during trading)");
+        sources.push("binance");
+      } catch (error: any) {
+        console.error("Error processing Binance orders:", error.message || error);
       }
     }
 
@@ -262,7 +275,7 @@ export async function GET(req: NextRequest) {
 
     return NextResponse.json({
       orders: uniqueOrders,
-      source: apiOrders.length > 0 ? "aster" : "supabase",
+      source: sources.length > 0 ? sources.join(",") : "supabase",
       synced: apiOrders.length > 0,
     });
   } catch (error: any) {
