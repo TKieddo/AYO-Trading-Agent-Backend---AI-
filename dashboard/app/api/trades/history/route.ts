@@ -76,7 +76,8 @@ export async function GET(req: NextRequest) {
             size: Number(t.size),
             price: Number(t.price),
             fee: Number(t.fee || 0),
-            pnl: t.pnl != null ? Number(t.pnl) : null, // Keep null for trades without PnL
+            // PnL can be null for trades without realized PnL - frontend handles this
+            pnl: t.pnl != null && !isNaN(Number(t.pnl)) ? Number(t.pnl) : 0,
             timestamp: t.executed_at,
           }));
           console.log(`Fetched ${supabaseTrades.length} trades from Supabase (includes all exchanges)`);
