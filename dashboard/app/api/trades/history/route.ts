@@ -361,10 +361,13 @@ export async function GET(req: NextRequest) {
       return timeB - timeA; // Descending order (newest first)
     });
 
+    // Always return trades array, even if empty
+    // This ensures the frontend receives a valid response
     return NextResponse.json({ 
-      trades: uniqueTrades,
-      source: sources.length > 0 ? sources.join(",") : "supabase",
+      trades: uniqueTrades || [],
+      source: sources.length > 0 ? sources.join(",") : (supabaseTrades.length > 0 ? "supabase" : "none"),
       synced: apiTrades.length > 0,
+      count: uniqueTrades.length,
     });
   } catch (error: any) {
     console.error("Error fetching trades history:", error);

@@ -278,10 +278,13 @@ export async function GET(req: NextRequest) {
       return timeB - timeA; // Descending order (newest first)
     });
 
+    // Always return orders array, even if empty
+    // This ensures the frontend receives a valid response
     return NextResponse.json({
-      orders: uniqueOrders,
-      source: sources.length > 0 ? sources.join(",") : "supabase",
+      orders: uniqueOrders || [],
+      source: sources.length > 0 ? sources.join(",") : (supabaseOrders.length > 0 ? "supabase" : "none"),
       synced: apiOrders.length > 0,
+      count: uniqueOrders.length,
     });
   } catch (error: any) {
     console.error("Error fetching orders history:", error);
