@@ -13,7 +13,7 @@ export default function TermsPage() {
         <section className="rounded-2xl ring-1 ring-slate-200 bg-white p-5">
           <h3 className="font-semibold text-slate-800 mb-2">Use of the Platform</h3>
           <ul className="list-disc pl-5 space-y-1 text-slate-600">
-            <li>Comply with applicable laws and exchange rules (e.g., Hyperliquid)</li>
+            <li>Comply with applicable laws and exchange rules (e.g., Binance, Aster)</li>
             <li>Safeguard credentials, API keys, and devices</li>
             <li>AYO may update, suspend, or discontinue features</li>
           </ul>
@@ -28,7 +28,7 @@ export default function TermsPage() {
         </section>
         <section className="rounded-2xl ring-1 ring-slate-200 bg-white p-5">
           <h3 className="font-semibold text-slate-800 mb-2">Integrations</h3>
-          <p className="text-slate-600">AYO integrates with third-party services such as Hyperliquid. We do not control third parties and are not responsible for their performance, security, or availability.</p>
+          <p className="text-slate-600">AYO integrates with third-party services such as Binance and Aster. We do not control third parties and are not responsible for their performance, security, or availability.</p>
         </section>
       </div>
 

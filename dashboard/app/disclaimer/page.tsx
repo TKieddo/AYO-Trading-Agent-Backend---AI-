@@ -26,7 +26,7 @@ export default function DisclaimerPage() {
 
       <div className="rounded-2xl ring-1 ring-slate-200 bg-white p-5">
         <h3 className="font-semibold text-slate-800 mb-2">Third-Party Services</h3>
-        <p className="text-slate-600">AYO integrates with third-party services such as the Hyperliquid decentralized exchange. We do not control third-party systems and are not responsible for their performance, security, availability, or policies.</p>
+        <p className="text-slate-600">AYO integrates with third-party services such as Binance and Aster exchanges. We do not control third-party systems and are not responsible for their performance, security, availability, or policies.</p>
       </div>
     </div>
   );

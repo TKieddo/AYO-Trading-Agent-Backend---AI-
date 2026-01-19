@@ -16,7 +16,7 @@ export default function RiskNoticePage() {
             <li>Market risk: volatility, gaps, illiquidity</li>
             <li>Execution risk: slippage, partial fills, failed txs</li>
             <li>Technology risk: outages, latency, defects, congestion</li>
-            <li>Integration risk: third-party failures or API changes (e.g., Hyperliquid)</li>
+            <li>Integration risk: third-party failures or API changes (e.g., Binance, Aster)</li>
             <li>Security risk: key compromise, phishing, malware</li>
             <li>Model risk: overfitting, regime shifts, invalid assumptions</li>
             <li>Human risk: misconfiguration, incorrect parameters, insufficient testing</li>

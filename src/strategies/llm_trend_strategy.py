@@ -234,7 +234,13 @@ class LLMTrendStrategy(StrategyInterface):
             "  • NEVER choose 'buy' when you have a long position or 'sell' when you have a short position\n"
             "- CRITICAL: Return ONLY valid JSON. Do not wrap in markdown code blocks. Do not add explanations outside the JSON object. Start with { and end with }.\n"
         )
-        user_prompt = context
+        # Convert context to string if it's a dict
+        if isinstance(context, dict):
+            user_prompt = json.dumps(context, indent=2, default=str)
+        elif isinstance(context, str):
+            user_prompt = context
+        else:
+            user_prompt = str(context)
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -373,7 +379,18 @@ class LLMTrendStrategy(StrategyInterface):
                         return parsed
                 content = msg.get("content") or "[]"
                 try:
-                    loaded = json.loads(content)
+                    # Strip markdown code blocks if present
+                    content_clean = content.strip()
+                    if content_clean.startswith("```"):
+                        if content_clean.startswith("```json"):
+                            content_clean = content_clean[7:]
+                        elif content_clean.startswith("```"):
+                            content_clean = content_clean[3:]
+                        content_clean = content_clean.strip()
+                        if content_clean.endswith("```"):
+                            content_clean = content_clean[:-3]
+                        content_clean = content_clean.strip()
+                    loaded = json.loads(content_clean)
                     if isinstance(loaded, dict) and "trade_decisions" in loaded:
                         return loaded
                 except (json.JSONDecodeError, KeyError, ValueError, TypeError):
@@ -527,7 +544,18 @@ class LLMTrendStrategy(StrategyInterface):
                 if isinstance(message.get("parsed"), dict):
                     parsed = message.get("parsed")
                 else:
-                    parsed = json.loads(content)
+                    # Strip markdown code blocks if present
+                    content_clean = content.strip()
+                    if content_clean.startswith("```"):
+                        if content_clean.startswith("```json"):
+                            content_clean = content_clean[7:]
+                        elif content_clean.startswith("```"):
+                            content_clean = content_clean[3:]
+                        content_clean = content_clean.strip()
+                        if content_clean.endswith("```"):
+                            content_clean = content_clean[:-3]
+                        content_clean = content_clean.strip()
+                    parsed = json.loads(content_clean)
 
                 if not isinstance(parsed, dict):
                     logging.error("Expected dict payload, got: %s; attempting sanitize", type(parsed))

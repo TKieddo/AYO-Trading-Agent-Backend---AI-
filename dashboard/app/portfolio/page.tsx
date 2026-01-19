@@ -85,8 +85,8 @@ async function fetchPortfolioData() {
           }));
         
         // Get total available balance from summary row if available
-        const summaryRow = assetsData.find((a: any) => a.symbol === '_TOTAL_');
-        const totalAvailableBalanceFromDb = summaryRow ? Number(summaryRow.available_balance || 0) : 0;
+        const summaryRow = assetsData.find((a: any) => a.symbol === '_TOTAL_') as any;
+        const totalAvailableBalanceFromDb = summaryRow ? Number(summaryRow?.available_balance || 0) : 0;
         
         // Calculate total account value from assets
         accountValue = assets.reduce((sum, a) => sum + a.holdingValue, 0);
@@ -242,8 +242,8 @@ async function fetchPortfolioData() {
         .order("timestamp", { ascending: false });
       
       if (histData && Array.isArray(histData)) {
-        for (const h of histData) {
-          const sym = String(h.symbol || "").toUpperCase();
+        for (const h of histData as any[]) {
+          const sym = String(h?.symbol || "").toUpperCase();
           if (sym) {
             if (!historicalPricesMap.has(sym)) {
               historicalPricesMap.set(sym, []);
@@ -413,7 +413,7 @@ async function fetchPortfolioData() {
   }
 
   // Return with assets calculated from balances/prices (fallback method)
-  return { assets, balances, accountValue, balanceHistory, exchange, trades };
+  return { assets, balances, accountValue, balanceHistory, exchange, trades, priceMap };
 }
 
 /**
@@ -439,13 +439,13 @@ function calculatePercentageChange(current: number, historical: number | null): 
 
 // Demo transactions (can be replaced with real transaction data later)
 const demoTransactions: Transaction[] = [
-  { id: "1", title: "Hyperliquid", subtitle: "Trade", avatarUrl: "https://images.unsplash.com/photo-1621416894569-0f39d0c3f3a1?w=80&q=80&auto=format&fit=crop", amount: 428.0 },
+  { id: "1", title: "Binance", subtitle: "Trade", avatarUrl: "https://images.unsplash.com/photo-1621416894569-0f39d0c3f3a1?w=80&q=80&auto=format&fit=crop", amount: 428.0 },
   { id: "2", title: "Position Closed", subtitle: "Trade", avatarUrl: "https://images.unsplash.com/photo-1517059224940-d4af9eec41e5?w=80&q=80&auto=format&fit=crop", amount: -124.55 },
-  { id: "3", title: "Hyperliquid", subtitle: "Trade", avatarUrl: "https://images.unsplash.com/photo-1621416894569-0f39d0c3f3a1?w=80&q=80&auto=format&fit=crop", amount: 5710.2 },
+  { id: "3", title: "Aster", subtitle: "Trade", avatarUrl: "https://images.unsplash.com/photo-1621416894569-0f39d0c3f3a1?w=80&q=80&auto=format&fit=crop", amount: 5710.2 },
 ];
 
 export default async function PortfolioPage() {
-  const { assets, balances, accountValue, balanceHistory, exchange, trades } = await fetchPortfolioData();
+  const { assets, balances, accountValue, balanceHistory, exchange, trades, priceMap } = await fetchPortfolioData();
   
   // Calculate total available balance (funds available for trading)
   const totalAvailableBalance = balances.reduce((sum, b) => sum + Number(b.availableBalance || 0), 0);
@@ -486,7 +486,7 @@ export default async function PortfolioPage() {
           return acc + balanceNative;
         } else {
           // Crypto: convert to USD using price
-          const priceInfo = priceMap.get(asset) || { price: 0 };
+          const priceInfo = priceMap?.get(asset) || { price: 0 };
           if (priceInfo.price > 0) {
             return acc + (balanceNative * priceInfo.price);
           }

@@ -128,14 +128,14 @@ export function PositionsTable() {
                 // Use ROI directly from Binance API (roiPercent field) with fallback calculation
                 let roiPercent: number | null = null;
                 if (position.roiPercent != null && position.roiPercent !== undefined && !isNaN(Number(position.roiPercent))) {
-                  roiPercent = Number(position.roiPercent);
-                } else if (position.roi != null && position.roi !== undefined && !isNaN(Number(position.roi))) {
-                  roiPercent = Number(position.roi);
+                  (position as any).roiPercent = Number(position.roiPercent);
+                } else if ((position as any).roi != null && (position as any).roi !== undefined && !isNaN(Number((position as any).roi))) {
+                  roiPercent = Number((position as any).roi);
                 }
                 
                 // Fallback: calculate ROI if not provided
                 if (roiPercent == null && position.initialMargin && position.initialMargin > 0 && position.unrealizedPnl != null) {
-                  roiPercent = (position.unrealizedPnl / position.initialMargin) * 100;
+                  (position as any).roiPercent = (position.unrealizedPnl / position.initialMargin) * 100;
                 }
                 
                 // Use leverage directly from Binance API

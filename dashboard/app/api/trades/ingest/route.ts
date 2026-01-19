@@ -74,8 +74,8 @@ export async function POST(req: NextRequest) {
           .in("order_id", Array.from(orderIdStrings));
         
         if (ordersData && Array.isArray(ordersData)) {
-          for (const order of ordersData) {
-            if (order.order_id && order.id) {
+          for (const order of ordersData as any[]) {
+            if (order?.order_id && order?.id) {
               orderIdMap.set(String(order.order_id), order.id);
             }
           }

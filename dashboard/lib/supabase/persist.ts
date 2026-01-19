@@ -157,11 +157,16 @@ export async function cleanupOldDecisions(): Promise<number> {
       .lt("timestamp", cutoffISO);
     
     // Delete decisions older than 10 days
-    const { error, count } = await supabase
+    const { error } = await supabase
       .from("decisions")
       .delete()
-      .lt("timestamp", cutoffISO)
-      .select("*", { count: "exact", head: false });
+      .lt("timestamp", cutoffISO);
+    
+    // Get count separately
+    const { count } = await supabase
+      .from("decisions")
+      .select("*", { count: "exact", head: true })
+      .lt("timestamp", cutoffISO);
     
     if (error) {
       console.error("Error cleaning up old decisions:", error);

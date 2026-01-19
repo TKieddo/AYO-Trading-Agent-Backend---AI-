@@ -96,11 +96,16 @@ class AutoStrategySelector(StrategyInterface):
                 # Add note to context about strategy change for the new strategy
                 if isinstance(context, dict):
                     context["_strategy_just_changed"] = True
-                    context["_previous_strategy"] = old_strategy_name
-                    context["_new_strategy"] = new_strategy_name
+                    context["_previous_strategy"] = str(old_strategy_name) if old_strategy_name else None
+                    context["_new_strategy"] = str(new_strategy_name)
         
         # Delegate to selected strategy
-        result = strategy.decide_trade(assets, context)
+        # Convert context back to JSON string if it's a dict (for compatibility with strategies expecting string)
+        if isinstance(context, dict):
+            context_str = json.dumps(context, default=str)
+        else:
+            context_str = context
+        result = strategy.decide_trade(assets, context_str)
         
         # Add auto selection info to reasoning (always show current strategy)
         strategy_info = f"🤖 [Auto Mode] Current Strategy: {new_strategy_name}"
@@ -321,6 +326,20 @@ class AutoStrategySelector(StrategyInterface):
             
             message = resp_json["choices"][0]["message"]
             content = message.get("content") or "{}"
+            
+            # Strip markdown code blocks if present (```json ... ```)
+            content = content.strip()
+            if content.startswith("```"):
+                # Remove opening ```json or ```
+                if content.startswith("```json"):
+                    content = content[7:]  # Remove ```json
+                elif content.startswith("```"):
+                    content = content[3:]   # Remove ```
+                # Remove closing ```
+                content = content.strip()
+                if content.endswith("```"):
+                    content = content[:-3]
+                content = content.strip()
             
             # Parse response
             try:

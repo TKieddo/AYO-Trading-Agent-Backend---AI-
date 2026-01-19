@@ -1,51 +1,64 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase/server";
-import { getHyperliquidEnv, getHyperliquidUserFills } from "@/lib/hyperliquid";
+import { getBinanceEnv, getBinanceUserTrades } from "@/lib/binance";
+import { getAsterEnv, getAsterUserTrades } from "@/lib/aster";
 
-// Backfill user trades using Hyperliquid userFills endpoint and rebuild performance
-// Env required: HYPERLIQUID_WALLET_ADDRESS, (optional) HYPERLIQUID_NETWORK
+// Backfill user trades using Binance or Aster API and rebuild performance
+// Env required: BINANCE_API_KEY + BINANCE_API_SECRET OR ASTER_USER_ADDRESS + ASTER_SIGNER_ADDRESS + ASTER_PRIVATE_KEY
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
-    const limit: number = body.limit || 10000; // Hyperliquid can return up to 10k fills
-    
-    const networkFromEnv = process.env.HYPERLIQUID_NETWORK?.toLowerCase().trim() || "mainnet";
-    let env = getHyperliquidEnv();
-    if (!env) return NextResponse.json({ error: "Hyperliquid API creds missing. Set HYPERLIQUID_WALLET_ADDRESS" }, { status: 400 });
-    
-    // Ensure baseUrl matches the env var
-    const expectedBaseUrl = networkFromEnv === "testnet" 
-      ? "https://api.hyperliquid-testnet.xyz" 
-      : "https://api.hyperliquid.xyz";
-    
-    if (env.baseUrl !== expectedBaseUrl) {
-      env = { ...env, baseUrl: expectedBaseUrl };
-    }
+    const limit: number = body.limit || 1000; // Binance max 1000, Aster can handle more
+    const exchange: string = body.exchange || "binance"; // "binance" or "aster"
+    const symbol: string = body.symbol || ""; // Optional symbol filter
     
     const sb = getServerSupabase();
     if (!sb) return NextResponse.json({ error: "Supabase service role missing" }, { status: 500 });
 
-    // Fetch fills from Hyperliquid
-    const fills = await getHyperliquidUserFills(env, limit);
+    let fills: any[] = [];
+    
+    // Fetch trades from selected exchange
+    if (exchange === "aster") {
+      const env = getAsterEnv();
+      if (!env) return NextResponse.json({ error: "Aster API creds missing. Set ASTER_USER_ADDRESS, ASTER_SIGNER_ADDRESS, ASTER_PRIVATE_KEY" }, { status: 400 });
+      
+      fills = await getAsterUserTrades(env, {
+        symbol: symbol || undefined,
+        limit,
+      });
+    } else {
+      // Default to Binance
+      const env = getBinanceEnv();
+      if (!env) return NextResponse.json({ error: "Binance API creds missing. Set BINANCE_API_KEY and BINANCE_API_SECRET" }, { status: 400 });
+      
+      fills = await getBinanceUserTrades(env, {
+        symbol: symbol || undefined,
+        limit,
+      });
+    }
     
     if (!Array.isArray(fills) || fills.length === 0) {
       return NextResponse.json({ error: "No fills found or invalid response" }, { status: 400 });
     }
     
-    // Map Hyperliquid fills to our schema
+    // Map exchange fills to our schema (works for both Binance and Aster)
     const ordersToSave: any[] = [];
     const tradesToSave: any[] = [];
     
     for (const fill of fills) {
-      const coin = fill.coin || fill.asset || "UNKNOWN";
-      const isBuy = fill.side === "B" || fill.side === "Buy" || fill.isBuy === true || fill.isBuyer === true;
+      // Handle both Binance and Aster formats
+      // Binance: symbol (e.g., "BTCUSDT"), Aster: symbol (e.g., "BTCUSDT")
+      const coin = fill.symbol?.replace("USDT", "") || fill.coin || fill.asset || "UNKNOWN";
+      // Binance: isBuyer (true/false), Aster: side ("BUY"/"SELL")
+      const isBuy = fill.isBuyer === true || fill.isBuyer === 1 || fill.side === "BUY" || fill.side === "Buy" || fill.side === "B";
       const side = isBuy ? "buy" : "sell";
-      const price = Number(fill.px || fill.price || 0);
-      const size = Number(fill.sz || fill.size || 0);
-      const realizedPnl = fill.closedPnl != null ? Number(fill.closedPnl) : null;
+      const price = Number(fill.price || fill.px || 0);
+      const size = Number(fill.qty || fill.size || fill.sz || 0);
+      // Binance: realizedPnl, Aster: realizedPnl (may be in different format)
+      const realizedPnl = fill.realizedPnl != null ? Number(fill.realizedPnl) : (fill.closedPnl != null ? Number(fill.closedPnl) : null);
       
-      // Get timestamp
+      // Get timestamp - Binance uses time (ms), Aster uses time (ms)
       let executedAt: string;
       if (fill.time) {
         const timeMs = Number(fill.time);
@@ -57,7 +70,8 @@ export async function POST(req: NextRequest) {
         executedAt = new Date().toISOString();
       }
       
-      const orderId = String(fill.oid || fill.id || `fill_${coin}_${executedAt}`);
+      // Binance: id (number), Aster: id (number or string)
+      const orderId = String(fill.id || fill.orderId || fill.oid || `fill_${coin}_${executedAt}`);
       
       // Save to orders table
       ordersToSave.push({
@@ -90,7 +104,7 @@ export async function POST(req: NextRequest) {
     // Step 1: Save orders first
     if (ordersToSave.length > 0) {
       await sb.from("orders").upsert(ordersToSave as any, { onConflict: "order_id" });
-      console.log(`Saved ${ordersToSave.length} orders from Hyperliquid fills`);
+      console.log(`Saved ${ordersToSave.length} orders from ${exchange} fills`);
     }
     
     // Step 2: Resolve order_id strings to UUIDs and save trades
@@ -108,8 +122,8 @@ export async function POST(req: NextRequest) {
           .in("order_id", orderIdStrings);
         
         if (ordersData && Array.isArray(ordersData)) {
-          for (const order of ordersData) {
-            if (order.order_id && order.id) {
+          for (const order of ordersData as any[]) {
+            if (order?.order_id && order?.id) {
               orderIdMap.set(String(order.order_id), order.id);
             }
           }
@@ -146,7 +160,7 @@ export async function POST(req: NextRequest) {
           // Ignore any errors (duplicates, etc.)
         }
       }
-      console.log(`Saved ${tradesWithOrderUuids.length} trades from Hyperliquid fills`);
+      console.log(`Saved ${tradesWithOrderUuids.length} trades from ${exchange} fills`);
     }
 
     // Rebuild performance_series from trades

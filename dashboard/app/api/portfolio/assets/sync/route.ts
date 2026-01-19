@@ -104,17 +104,18 @@ export async function POST(req: NextRequest) {
         .order("timestamp", { ascending: false });
       
       if (histData && Array.isArray(histData)) {
-        for (const h of histData) {
-          const sym = String(h.symbol || "").toUpperCase();
+        for (const h of histData as any[]) {
+          const sym = String(h?.symbol || "").toUpperCase();
           if (sym) {
             if (!historicalPricesMap.has(sym)) {
               historicalPricesMap.set(sym, []);
             }
-            const price = Number(h.price || 0);
-            if (price > 0) {
+            const price = Number(h?.price || 0);
+            const timestamp = h?.timestamp;
+            if (price > 0 && timestamp) {
               historicalPricesMap.get(sym)!.push({
                 price: price,
-                timestamp: h.timestamp,
+                timestamp: String(timestamp),
               });
             }
           }
@@ -237,7 +238,7 @@ export async function POST(req: NextRequest) {
     assetsToUpsert.push({
       symbol: '_TOTAL_',
       name: 'Portfolio Summary',
-      logo_url: null,
+      logo_url: "",
       price: 0,
       change_24h: 0,
       holding_qty: 0,
@@ -248,7 +249,7 @@ export async function POST(req: NextRequest) {
 
     const { error: upsertError } = await supabase
       .from("portfolio_assets")
-      .upsert(assetsToUpsert, {
+      .upsert(assetsToUpsert as any, {
         onConflict: "symbol",
         ignoreDuplicates: false,
       });
