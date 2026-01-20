@@ -16,7 +16,8 @@ async def get_trading_settings() -> Dict[str, Any]:
     # ALWAYS try to fetch from database API first (Next.js backend)
     try:
         # Get API URL from env or use default
-        api_url = CONFIG.get("NEXT_PUBLIC_API_URL") or CONFIG.get("next_public_base_url") or "http://localhost:3001"
+        import os
+        api_url = os.getenv("NEXT_PUBLIC_API_URL") or os.getenv("NEXT_PUBLIC_BASE_URL") or os.getenv("DASHBOARD_URL") or CONFIG.get("NEXT_PUBLIC_API_URL") or CONFIG.get("next_public_base_url") or "http://localhost:3001"
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 f"{api_url}/api/trading/settings",

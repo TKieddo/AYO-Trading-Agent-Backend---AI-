@@ -579,7 +579,7 @@ def main():
                         "default_leverage": default_leverage,
                         "per_asset_leverage": per_asset_leverage,
                         "enforcement": "DUAL: System-level (automatic) + Agent-level (must respect in decisions)",
-                        "warning": f"ALLOCATION_USD must NEVER exceed MARGIN_PER_POSITION (${trading_settings.get('margin_per_position', 0):.2f}). System will enforce this, but agent must also respect it."
+                        "warning": f"ALLOCATION_USD must NEVER exceed MARGIN_PER_POSITION (${trading_settings.get('margin_per_position') or 0:.2f}). System will enforce this, but agent must also respect it."
                     }
                 }),
                 ("account", dashboard),
