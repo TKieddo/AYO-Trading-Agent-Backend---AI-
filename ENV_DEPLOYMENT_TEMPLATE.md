@@ -76,6 +76,17 @@ ZEC_TIMEFRAME=5m
 API_HOST=0.0.0.0
 API_PORT=3000
 APP_PORT=3000
+
+# TAAPI API (OPTIONAL - for technical indicators)
+# Can be omitted if using TA-Lib + Binance (default)
+TAAPI_API_KEY=your_taapi_api_key
+
+# Supabase (OPTIONAL - for trade syncing to database)
+# Only needed if you want trades automatically saved to Supabase
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_KEY=your_supabase_anon_key
+# OR use SUPABASE_SERVICE_KEY (recommended for server-side, bypasses RLS)
+SUPABASE_SERVICE_KEY=your_supabase_service_role_key
 ```
 
 ## Next.js Dashboard Variables

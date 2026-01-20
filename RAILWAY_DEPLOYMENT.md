@@ -65,9 +65,19 @@ ASTER_PRIVATE_KEY=your_aster_private_key
 ASTER_API_BASE=https://fapi.asterdex.com
 ```
 
-#### Recommended Variables (Trading Configuration):
+#### Optional but Recommended Variables:
 
 ```env
+# TAAPI API (OPTIONAL - for technical indicators, replaced by TA-Lib + Binance)
+TAAPI_API_KEY=your_taapi_key_here
+
+# Supabase (OPTIONAL - for trade syncing to database)
+# Only needed if you want trades automatically saved to Supabase
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_KEY=your_supabase_service_role_key
+# OR use SUPABASE_SERVICE_KEY (recommended for server-side, bypasses RLS)
+SUPABASE_SERVICE_KEY=your_supabase_service_role_key
+
 # Trading Configuration (can be changed via dashboard later)
 ASSETS=BTC ETH SOL BNB ZEC DOGE AVAX XLM XMR
 INTERVAL=5m

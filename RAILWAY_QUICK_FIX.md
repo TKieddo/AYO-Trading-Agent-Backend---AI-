@@ -88,6 +88,14 @@ Value: your_aster_private_key
    - Binance: `BINANCE_API_KEY` + `BINANCE_API_SECRET`
    - OR Aster: `ASTER_USER_ADDRESS` + `ASTER_SIGNER_ADDRESS` + `ASTER_PRIVATE_KEY`
 
+## 📋 Optional Variables (Recommended)
+
+**These are NOT required for the agent to start, but recommended:**
+
+- `TAAPI_API_KEY` - Optional (for technical indicators, can use TA-Lib + Binance instead)
+- `SUPABASE_URL` + `SUPABASE_KEY` - Optional (only needed if you want trades synced to Supabase database)
+- `SUPABASE_SERVICE_KEY` - Optional (recommended over SUPABASE_KEY for server-side operations)
+
 ---
 
 ## 🎯 Pro Tip: Bulk Import
