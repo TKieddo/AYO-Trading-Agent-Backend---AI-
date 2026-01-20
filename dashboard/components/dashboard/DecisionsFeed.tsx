@@ -60,9 +60,8 @@ export function DecisionsFeed({ variant = "homepage" }: DecisionsFeedProps = {})
   
   // Styling based on variant
   const isDashboard = variant === "dashboard";
-  const cardClassName = isDashboard 
-    ? "rounded-[24px] bg-white border border-slate-200"
-    : "rounded-[24px] bg-lime-400/20 backdrop-blur-md border-lime-400/30";
+  // Keep same transparent lime background for both, but use darker text for dashboard
+  const cardClassName = "rounded-[24px] bg-lime-400/20 backdrop-blur-md border-lime-400/30";
   const titleClassName = isDashboard
     ? "flex items-center gap-2 text-slate-800"
     : "flex items-center gap-2 text-white";

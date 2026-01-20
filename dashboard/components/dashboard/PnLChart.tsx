@@ -147,11 +147,19 @@ export function PnLChart({ externalRange, showRangeToggle = true }: PnLChartProp
     
     // Check if we're in week mode (groupBy=week) - show all 7 days (API filters to current week only)
     if (effectiveRange === "week" || externalRange === "7d") {
-      const weekdayLetters = ["M", "Tu", "W", "Th", "F", "Sa", "Su"]; // Mon, Tue, Wed, Thu, Fri, Sat, Sun
-      return weekdayLetters.map(label => ({
-        label,
-        value: dataMap.get(label) ?? 0
-      }));
+      // API returns old labels: ["M", "T", "W", "T", "F", "Sa", "Su"] where both Tue and Thu are "T"
+      // We need to map them to new display labels: ["M", "Tu", "W", "Th", "F", "Sa", "Su"]
+      const apiLabels = ["M", "T", "W", "T", "F", "Sa", "Su"]; // Old API format (index: 0=M, 1=Tue, 2=W, 3=Thu, 4=F, 5=Sa, 6=Su)
+      const displayLabels = ["M", "Tu", "W", "Th", "F", "Sa", "Su"]; // New display format
+      
+      // API returns data in order by day index, so we can map by array position
+      return displayLabels.map((displayLabel, index) => {
+        // Get value from dataArray by index (API returns in day order: M, T, W, T, F, Sa, Su)
+        const dataEntry = dataArray[index];
+        const value = dataEntry ? dataEntry.value : (dataMap.get(apiLabels[index]) ?? 0);
+        
+        return { label: displayLabel, value };
+      });
     }
     
     // Check if we're in month mode (groupBy=month) - show all 5 weeks (API filters to current month only)
