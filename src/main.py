@@ -381,6 +381,7 @@ def main():
                         "position_size": position_size
                     }
                     last_cache_update[coin] = current_time
+                    logging.info(f"📊 Position PnL cached for {coin}: ${unrealized_pnl:.2f} ({roi_percent:.2f}% ROI) | Entry: ${entry_price:.2f} | Size: {position_size:.6f}")
                 
                 positions.append({
                     "symbol": coin,
@@ -613,6 +614,7 @@ def main():
             # CRITICAL: ENFORCE STOP LOSS BEFORE AI DECISION
             # Stop loss must be respected at all costs, regardless of strategy
             # ========================================================================
+            logging.info(f"🛡️  Checking stop loss for {len(positions)} positions before AI decision...")
             positions_to_close = []  # Track positions that hit stop loss
             
             for pos in positions:
@@ -648,17 +650,21 @@ def main():
                 if pnl_percent is not None:
                     # For long: loss when PnL% is negative and exceeds SL%
                     # For short: loss when PnL% is negative and exceeds SL%
+                    logging.info(f"📊 Position {asset} PnL check: ${unrealized_pnl:.2f} ({pnl_percent:.2f}%) | SL threshold: -{effective_sl_percent}%")
                     if pnl_percent <= -effective_sl_percent:
                         sl_breached_percent = True
                         add_event(f"🛑 STOP LOSS BREACHED (Percentage) for {asset}: {pnl_percent:.2f}% (threshold: -{effective_sl_percent}%). Closing immediately!")
+                        logging.warning(f"🛑 STOP LOSS BREACHED (Percentage) for {asset}: {pnl_percent:.2f}% <= -{effective_sl_percent}%")
                 
                 # Check stop loss in USD (if configured)
                 sl_breached_usd = False
                 if stop_loss_usd is not None and stop_loss_usd < 0:
                     # stop_loss_usd is negative (e.g., -18 means close if loss >= $18)
+                    logging.info(f"📊 Position {asset} USD SL check: ${unrealized_pnl:.2f} vs threshold: ${stop_loss_usd:.2f}")
                     if unrealized_pnl <= stop_loss_usd:
                         sl_breached_usd = True
                         add_event(f"🛑 STOP LOSS BREACHED (USD) for {asset}: ${unrealized_pnl:.2f} (threshold: ${stop_loss_usd:.2f}). Closing immediately!")
+                        logging.warning(f"🛑 STOP LOSS BREACHED (USD) for {asset}: ${unrealized_pnl:.2f} <= ${stop_loss_usd:.2f}")
                 
                 # If stop loss is breached, mark for immediate closure
                 if sl_breached_percent or sl_breached_usd:
@@ -781,6 +787,20 @@ def main():
                     "tp_sl_guidance": f"Calculate TP/SL prices using configured percentages: TP={tp_percent}%, SL={sl_percent}%. If not provided, system will calculate automatically."
                 })
             ])
+            # Log position data being passed to AI
+            positions_data = context_payload.get("positions_data", {}).get("positions", [])
+            if positions_data:
+                logging.info(f"📤 Passing {len(positions_data)} position(s) with PnL data to AI agent:")
+                for pos_data in positions_data:
+                    asset = pos_data.get("asset", "UNKNOWN")
+                    pnl_usd = pos_data.get("pnl_usd", 0)
+                    pnl_percent = pos_data.get("pnl_percent", 0)
+                    pnl_sign = pos_data.get("pnl_sign", "+")
+                    pnl_percent_sign = pos_data.get("pnl_percent_sign", "+")
+                    logging.info(f"   • {asset}: {pnl_sign}${abs(pnl_usd):.2f} ({pnl_percent_sign}{abs(pnl_percent):.2f}%) | Side: {pos_data.get('side', 'N/A')} | Entry: ${pos_data.get('entry_price', 0):.2f} | Current: ${pos_data.get('current_price', 0):.2f}")
+            else:
+                logging.info("📤 No open positions - passing empty positions_data to AI agent")
+            
             context = json.dumps(context_payload, default=json_default)
             add_event(f"Combined prompt length: {len(context)} chars for {len(args.assets)} assets")
             with open("prompts.log", "a") as f:
