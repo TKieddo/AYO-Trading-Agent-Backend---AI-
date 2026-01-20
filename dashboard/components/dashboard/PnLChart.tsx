@@ -132,11 +132,15 @@ export function PnLChart({ externalRange, showRangeToggle = true }: PnLChartProp
 
   const points = useMemo(() => {
     // Create a map of label -> value from API data
+    // Also track order for week mode to distinguish Tuesday vs Thursday
     const dataMap = new Map<string, number>();
+    const dataArray: Array<{label: string, value: number}> = [];
     if (data && data.length > 0) {
       for (const p of data) {
         const label = p.label || new Date(p.timestamp).toLocaleDateString();
-        dataMap.set(label, Number(p.daily_pnl ?? 0));
+        const value = Number(p.daily_pnl ?? 0);
+        dataMap.set(label, value);
+        dataArray.push({ label, value });
       }
     }
     
@@ -153,8 +157,10 @@ export function PnLChart({ externalRange, showRangeToggle = true }: PnLChartProp
       const displayLabels = ["M", "Tu", "W", "Th", "F", "Sa", "Su"]; // New display format
       
       // API returns data in order by day index, so we can map by array position
+      // Since API groups by day of week, dataArray will have entries in order: M, T (Tue), W, T (Thu), F, Sa, Su
       return displayLabels.map((displayLabel, index) => {
         // Get value from dataArray by index (API returns in day order: M, T, W, T, F, Sa, Su)
+        // For Tuesday (index 1) and Thursday (index 3), both have label "T" in API, but they're in different positions
         const dataEntry = dataArray[index];
         const value = dataEntry ? dataEntry.value : (dataMap.get(apiLabels[index]) ?? 0);
         
