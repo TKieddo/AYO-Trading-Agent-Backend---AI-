@@ -153,30 +153,52 @@ export function PnLChart({ externalRange, showRangeToggle = true }: PnLChartProp
     if (effectiveRange === "week" || externalRange === "7d") {
       // API returns old labels: ["M", "T", "W", "T", "F", "Sa", "Su"] where both Tue and Thu are "T"
       // We need to map them to new display labels: ["M", "Tu", "W", "Th", "F", "Sa", "Su"]
+      const apiLabels = ["M", "T", "W", "T", "F", "Sa", "Su"]; // Old API format
       const displayLabels = ["M", "Tu", "W", "Th", "F", "Sa", "Su"]; // New display format
       
-      // Create a map by day index (0=Monday, 1=Tuesday, ..., 6=Sunday)
-      // Use timestamp to determine actual day of week, not just label
-      const dayIndexMap = new Map<number, number>(); // dayIndex -> value
+      // Create a map by label -> value, but we need to handle duplicate "T" labels
+      // API returns data sorted by day (Monday first), so we can use array position
+      // But we also need to handle cases where not all days have data
+      const labelValueMap = new Map<string, number[]>();
       
+      // First pass: collect all values by label
       if (data && data.length > 0) {
         for (const p of data) {
-          // Parse timestamp to get actual day of week
-          const timestamp = p.timestamp;
-          if (timestamp) {
-            const date = new Date(timestamp);
-            const dayOfWeek = date.getDay(); // 0=Sunday, 1=Monday, ..., 6=Saturday
-            // Convert to our day index: 0=Monday, 1=Tuesday, ..., 6=Sunday
-            const dayIndex = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-            dayIndexMap.set(dayIndex, Number(p.daily_pnl ?? 0));
+          const label = p.label || "";
+          const value = Number(p.daily_pnl ?? 0);
+          if (!labelValueMap.has(label)) {
+            labelValueMap.set(label, []);
           }
+          labelValueMap.get(label)!.push(value);
         }
       }
       
-      // Map display labels to day indices and get values
+      // Map display labels to values
+      // For "T" labels, we need to distinguish Tuesday (index 1) from Thursday (index 3)
       return displayLabels.map((displayLabel, index) => {
-        // index corresponds to day index: 0=M, 1=Tu, 2=W, 3=Th, 4=F, 5=Sa, 6=Su
-        const value = dayIndexMap.get(index) ?? 0;
+        const apiLabel = apiLabels[index];
+        let value = 0;
+        
+        if (apiLabel === "T") {
+          // Tuesday or Thursday - need to get the right one
+          // API returns data in day order, so we can find "T" entries and map by position
+          const tValues = labelValueMap.get("T") || [];
+          // Find which "T" entry corresponds to this day index
+          // We need to count how many "T" entries come before this index
+          let tIndex = 0;
+          for (let i = 0; i < index; i++) {
+            if (apiLabels[i] === "T") {
+              tIndex++;
+            }
+          }
+          // tIndex tells us which "T" entry this is (0 for Tuesday, 1 for Thursday)
+          value = tValues[tIndex] ?? 0;
+        } else {
+          // For non-"T" labels, get the value directly
+          const values = labelValueMap.get(apiLabel) || [];
+          value = values[0] ?? 0;
+        }
+        
         return { label: displayLabel, value };
       });
     }
