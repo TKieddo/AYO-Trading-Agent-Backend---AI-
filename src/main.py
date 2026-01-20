@@ -16,6 +16,7 @@ import math  # For Sharpe
 from dotenv import load_dotenv
 import os
 import json
+import fnmatch
 from aiohttp import web, ClientSession, ClientTimeout
 try:
     import httpx
@@ -2840,6 +2841,54 @@ def main():
         # Configure aiohttp to handle connection errors gracefully
         app = web.Application()
         
+        # Add CORS middleware to allow requests from Vercel and other origins
+        @web.middleware
+        async def cors_middleware(request, handler):
+            """Handle CORS headers for cross-origin requests."""
+            # Handle preflight OPTIONS requests
+            if request.method == 'OPTIONS':
+                response = web.Response()
+            else:
+                response = await handler(request)
+            
+            # Get allowed origins from environment or use defaults
+            allowed_origins = os.getenv('CORS_ALLOWED_ORIGINS', '').split(',')
+            # Add common localhost origins for development
+            if not allowed_origins or allowed_origins == ['']:
+                allowed_origins = [
+                    'http://localhost:3000',
+                    'http://localhost:3001',
+                    'https://*.vercel.app',  # Vercel preview deployments
+                ]
+            else:
+                # Clean up the list
+                allowed_origins = [origin.strip() for origin in allowed_origins if origin.strip()]
+            
+            # Get the origin from the request
+            origin = request.headers.get('Origin', '')
+            
+            # Check if origin is allowed (supports wildcard for Vercel)
+            origin_allowed = False
+            if origin:
+                for allowed in allowed_origins:
+                    if allowed == '*' or origin == allowed:
+                        origin_allowed = True
+                        break
+                    # Support wildcard matching for Vercel (*.vercel.app)
+                    if '*' in allowed:
+                        if fnmatch.fnmatch(origin, allowed):
+                            origin_allowed = True
+                            break
+            
+            # Set CORS headers
+            if origin_allowed or not origin:
+                response.headers['Access-Control-Allow-Origin'] = origin if origin_allowed else '*'
+                response.headers['Access-Control-Allow-Methods'] = 'GET, POST, PUT, DELETE, OPTIONS'
+                response.headers['Access-Control-Allow-Headers'] = 'Content-Type, Authorization'
+                response.headers['Access-Control-Allow-Credentials'] = 'true'
+            
+            return response
+        
         # Add middleware to catch and suppress connection errors
         @web.middleware
         async def suppress_connection_error_middleware(request, handler):
@@ -2853,6 +2902,7 @@ def main():
                     return web.Response(status=200, text='')
                 raise
         
+        app.middlewares.append(cors_middleware)
         app.middlewares.append(suppress_connection_error_middleware)
         
         await start_api(app)

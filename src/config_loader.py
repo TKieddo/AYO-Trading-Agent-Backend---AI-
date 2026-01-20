@@ -138,9 +138,9 @@ CONFIG = {
     "enable_drawdown_protection": _get_bool("ENABLE_DRAWDOWN_PROTECTION", True),  # Enable drawdown protection
     "max_drawdown_from_peak_pct": _get_float("MAX_DRAWDOWN_FROM_PEAK_PCT", 5.0),  # Close if profit drops X% from peak
     "loss_protection_pct": _get_float("LOSS_PROTECTION_PCT", 5.0),  # Close if position is down X% (backup protection)
-    # API server
+    # API server (DigitalOcean App Platform uses PORT, fallback to APP_PORT/API_PORT/3000)
     "api_host": _get_env("API_HOST", "0.0.0.0"),
-    "api_port": _get_env("APP_PORT") or _get_env("API_PORT") or "3000",
+    "api_port": _get_env("PORT") or _get_env("APP_PORT") or _get_env("API_PORT") or "3000",
     # Alert service configuration
     "ALERT_SERVICE_ENABLED": _get_bool("ALERT_SERVICE_ENABLED", False),
     "ALERT_SERVICE_PORT": _get_int("ALERT_SERVICE_PORT", 8080),

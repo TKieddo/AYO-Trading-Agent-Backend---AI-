@@ -18,6 +18,31 @@ interface TradingSettings {
   max_positions: number;
   position_sizing_mode: "auto" | "fixed" | "target_profit" | "margin";
   active_strategy_ids: string[];
+  multi_exchange_mode: boolean;
+  assets: string;
+  interval: string;
+  strategy: string;
+  exchange: string;
+  alert_service_enabled: boolean;
+  alert_risk_per_trade: number;
+  alert_check_interval: number;
+  alert_agent_endpoint: string;
+  alert_assets: string;
+  alert_timeframe: string;
+  enable_trailing_stop: boolean;
+  trailing_stop_activation_pct: number;
+  trailing_stop_distance_pct: number;
+  max_position_hold_hours: number;
+  enable_drawdown_protection: boolean;
+  max_drawdown_from_peak_pct: number;
+  scalping_tp_percent: number;
+  scalping_sl_percent: number;
+  auto_strategy_cache_minutes: number;
+  asset_leverage_overrides: Record<string, number>;
+  asset_timeframes: Record<string, string>;
+  llm_model: string;
+  deepseek_max_tokens: number;
+  next_public_base_url: string;
 }
 
 export function TradingSettings() {
@@ -31,6 +56,31 @@ export function TradingSettings() {
     max_positions: 6,
     position_sizing_mode: "auto",
     active_strategy_ids: [],
+    multi_exchange_mode: false,
+    assets: "BTC ETH SOL",
+    interval: "5m",
+    strategy: "auto",
+    exchange: "binance",
+    alert_service_enabled: false,
+    alert_risk_per_trade: 30.0,
+    alert_check_interval: 5,
+    alert_agent_endpoint: "http://localhost:5000/api/alert/signal",
+    alert_assets: "ZEC,BTC,ETH,SOL,BNB",
+    alert_timeframe: "15m",
+    enable_trailing_stop: true,
+    trailing_stop_activation_pct: 5.0,
+    trailing_stop_distance_pct: 3.0,
+    max_position_hold_hours: 48.0,
+    enable_drawdown_protection: true,
+    max_drawdown_from_peak_pct: 5.0,
+    scalping_tp_percent: 5.0,
+    scalping_sl_percent: 5.0,
+    auto_strategy_cache_minutes: 0,
+    asset_leverage_overrides: {},
+    asset_timeframes: {},
+    llm_model: "deepseek-reasoner",
+    deepseek_max_tokens: 20000,
+    next_public_base_url: "http://localhost:3001",
   });
   const [strategies, setStrategies] = useState<any[]>([]);
   const [loadingStrategies, setLoadingStrategies] = useState(false);
@@ -73,6 +123,31 @@ export function TradingSettings() {
           max_positions: data.max_positions ?? 6,
           position_sizing_mode: data.position_sizing_mode || "auto",
           active_strategy_ids: data.active_strategy_ids || [],
+          multi_exchange_mode: data.multi_exchange_mode ?? false,
+          assets: data.assets || "BTC ETH SOL",
+          interval: data.interval || "5m",
+          strategy: data.strategy || "auto",
+          exchange: data.exchange || "binance",
+          alert_service_enabled: data.alert_service_enabled ?? false,
+          alert_risk_per_trade: data.alert_risk_per_trade ?? 30.0,
+          alert_check_interval: data.alert_check_interval ?? 5,
+          alert_agent_endpoint: data.alert_agent_endpoint || "http://localhost:5000/api/alert/signal",
+          alert_assets: data.alert_assets || "ZEC,BTC,ETH,SOL,BNB",
+          alert_timeframe: data.alert_timeframe || "15m",
+          enable_trailing_stop: data.enable_trailing_stop ?? true,
+          trailing_stop_activation_pct: data.trailing_stop_activation_pct ?? 5.0,
+          trailing_stop_distance_pct: data.trailing_stop_distance_pct ?? 3.0,
+          max_position_hold_hours: data.max_position_hold_hours ?? 48.0,
+          enable_drawdown_protection: data.enable_drawdown_protection ?? true,
+          max_drawdown_from_peak_pct: data.max_drawdown_from_peak_pct ?? 5.0,
+          scalping_tp_percent: data.scalping_tp_percent ?? 5.0,
+          scalping_sl_percent: data.scalping_sl_percent ?? 5.0,
+          auto_strategy_cache_minutes: data.auto_strategy_cache_minutes ?? 0,
+          asset_leverage_overrides: data.asset_leverage_overrides || {},
+          asset_timeframes: data.asset_timeframes || {},
+          llm_model: data.llm_model || "deepseek-reasoner",
+          deepseek_max_tokens: data.deepseek_max_tokens ?? 20000,
+          next_public_base_url: data.next_public_base_url || "http://localhost:3001",
         });
       }
     } catch (error) {
@@ -130,91 +205,121 @@ export function TradingSettings() {
       <CardHeader>
         <CardTitle>Trading Settings</CardTitle>
         <p className="text-sm text-slate-500">
-          Configure leverage, take profit, stop loss, and position sizing. These settings are saved to the database and used by the trading agent.
+          All settings are saved to the database and applied in real-time. No redeployment needed when changing trading pairs, leverage, or other parameters.
         </p>
       </CardHeader>
-      <CardContent className="space-y-4">
-        {/* Leverage */}
-        <div className="space-y-2">
-          <Label htmlFor="leverage" className="flex items-center gap-2">
-            Default Leverage
-            <span className="text-xs text-slate-500">(1-100x, will be capped by asset max)</span>
-          </Label>
-          <Input
-            id="leverage"
-            type="number"
-            min="1"
-            max="100"
-            value={settings.leverage}
-            onChange={(e) =>
-              setSettings({ ...settings, leverage: parseInt(e.target.value) || 10 })
-            }
-            className="w-full"
-          />
-          <p className="text-xs text-slate-500">
-            The AI will use the maximum allowed leverage for each asset if your setting exceeds it.
-          </p>
-        </div>
-
-        {/* Take Profit */}
-        <div className="space-y-2">
-          <Label htmlFor="take_profit" className="flex items-center gap-2">
-            Take Profit Percentage
-            <span className="text-xs text-slate-500">(0.1-100%)</span>
-          </Label>
-          <Input
-            id="take_profit"
-            type="number"
-            min="0.1"
-            max="100"
-            step="0.1"
-            value={settings.take_profit_percent}
-            onChange={(e) =>
-              setSettings({
-                ...settings,
-                take_profit_percent: parseFloat(e.target.value) || 5.0,
-              })
-            }
-            className="w-full"
-          />
-          <p className="text-xs text-slate-500">
-            Percentage above entry price (long) or below entry price (short) to take profit.
-          </p>
-        </div>
-
-        {/* Stop Loss */}
-        <div className="space-y-2">
-          <Label htmlFor="stop_loss" className="flex items-center gap-2">
-            Stop Loss Percentage
-            <span className="text-xs text-slate-500">(0.1-50%)</span>
-          </Label>
-          <Input
-            id="stop_loss"
-            type="number"
-            min="0.1"
-            max="50"
-            step="0.1"
-            value={settings.stop_loss_percent}
-            onChange={(e) =>
-              setSettings({
-                ...settings,
-                stop_loss_percent: parseFloat(e.target.value) || 3.0,
-              })
-            }
-            className="w-full"
-          />
-          <p className="text-xs text-slate-500">
-            Percentage below entry price (long) or above entry price (short) to stop loss. Higher values allow more room for reversals.
-          </p>
-        </div>
-
-        {/* Position Sizing Section */}
-        <div className="pt-4 border-t border-slate-200">
-          <h3 className="text-sm font-semibold text-slate-700 mb-4">Position Sizing</h3>
+      <CardContent className="space-y-6">
+        {/* ============================================ */}
+        {/* SECTION 1: TRADING CONFIGURATION */}
+        {/* ============================================ */}
+        <div className="space-y-4">
+          <div className="pb-2 border-b-2 border-slate-300">
+            <h3 className="text-lg font-bold text-slate-800">1. Trading Configuration</h3>
+            <p className="text-xs text-slate-500 mt-1">Configure what assets to trade, timeframe, strategy, and exchange</p>
+          </div>
           
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="assets" className="font-semibold">Assets to Trade (Trading Pairs)</Label>
+              <Input
+                id="assets"
+                type="text"
+                value={settings.assets}
+                onChange={(e) => setSettings({ ...settings, assets: e.target.value })}
+                placeholder="BTC ETH SOL BNB ZEC DOGE AVAX XLM XMR"
+                className="w-full"
+              />
+              <p className="text-xs text-slate-500">Space-separated list of assets (e.g., "BTC ETH SOL"). You can add or remove pairs anytime.</p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="interval" className="font-semibold">Trading Interval (Timeframe)</Label>
+              <Input
+                id="interval"
+                type="text"
+                value={settings.interval}
+                onChange={(e) => setSettings({ ...settings, interval: e.target.value })}
+                placeholder="5m"
+                className="w-full"
+              />
+              <p className="text-xs text-slate-500">Timeframe for analysis (e.g., "5m", "15m", "1h", "1d")</p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="strategy" className="font-semibold">Trading Strategy</Label>
+              <select
+                id="strategy"
+                value={settings.strategy}
+                onChange={(e) => setSettings({ ...settings, strategy: e.target.value })}
+                className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#c0e156]"
+              >
+                <option value="auto">Auto (LLM chooses best strategy)</option>
+                <option value="scalping">Scalping</option>
+                <option value="llm_trend">LLM Trend</option>
+                <option value="default">Default</option>
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="exchange" className="font-semibold">Exchange</Label>
+              <select
+                id="exchange"
+                value={settings.exchange}
+                onChange={(e) => setSettings({ ...settings, exchange: e.target.value })}
+                className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#c0e156]"
+              >
+                <option value="binance">Binance</option>
+                <option value="aster">Aster DEX</option>
+              </select>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="multi_exchange_mode"
+                checked={settings.multi_exchange_mode}
+                onChange={(e) => setSettings({ ...settings, multi_exchange_mode: e.target.checked })}
+                className="w-4 h-4 text-[#c0e156] focus:ring-[#c0e156] rounded"
+              />
+              <Label htmlFor="multi_exchange_mode" className="font-semibold">Enable Multi-Exchange Mode</Label>
+            </div>
+          </div>
+        </div>
+
+        {/* ============================================ */}
+        {/* SECTION 2: POSITION SIZING & LEVERAGE */}
+        {/* ============================================ */}
+        <div className="pt-4 border-t-2 border-slate-300 space-y-4">
+          <div className="pb-2 border-b-2 border-slate-300">
+            <h3 className="text-lg font-bold text-slate-800">2. Position Sizing & Leverage</h3>
+            <p className="text-xs text-slate-500 mt-1">Configure how much to risk per trade and leverage</p>
+          </div>
+          
+          <div className="space-y-2">
+            <Label htmlFor="leverage" className="font-semibold">
+              Default Leverage
+              <span className="text-xs text-slate-500 font-normal ml-2">(1-100x, will be capped by asset max)</span>
+            </Label>
+            <Input
+              id="leverage"
+              type="number"
+              min="1"
+              max="100"
+              value={settings.leverage}
+              onChange={(e) =>
+                setSettings({ ...settings, leverage: parseInt(e.target.value) || 10 })
+              }
+              className="w-full"
+            />
+            <p className="text-xs text-slate-500">
+              The AI will use the maximum allowed leverage for each asset if your setting exceeds it.
+            </p>
+          </div>
+
           {/* Position Sizing Mode */}
-          <div className="space-y-2 mb-4">
-            <Label htmlFor="position_sizing_mode" className="flex items-center gap-2">
+          
+          <div className="space-y-2">
+            <Label htmlFor="position_sizing_mode" className="font-semibold">
               Position Sizing Mode
             </Label>
             <select
@@ -238,9 +343,8 @@ export function TradingSettings() {
             </p>
           </div>
 
-          {/* Target Profit per 1% Move */}
           {(settings.position_sizing_mode === "auto" || settings.position_sizing_mode === "target_profit") && (
-            <div className="space-y-2 mb-4">
+            <div className="space-y-2">
               <Label htmlFor="target_profit" className="flex items-center gap-2">
                 Target Profit per 1% Move (USD)
                 <span className="text-xs text-slate-500">(0.01-1000)</span>
@@ -297,9 +401,8 @@ export function TradingSettings() {
             </div>
           )}
 
-          {/* Margin per Position */}
           {settings.position_sizing_mode === "margin" && (
-            <div className="space-y-2 mb-4">
+            <div className="space-y-2">
               <Label htmlFor="margin_per_position" className="flex items-center gap-2">
                 Margin per Position (USD)
                 <span className="text-xs text-slate-500">(1-100000, amount you risk per trade)</span>
@@ -337,11 +440,10 @@ export function TradingSettings() {
             </div>
           )}
 
-          {/* Max Positions */}
-          <div className="space-y-2 mb-4">
-            <Label htmlFor="max_positions" className="flex items-center gap-2">
+          <div className="space-y-2">
+            <Label htmlFor="max_positions" className="font-semibold">
               Maximum Concurrent Positions
-              <span className="text-xs text-slate-500">(1-50)</span>
+              <span className="text-xs text-slate-500 font-normal ml-2">(1-50)</span>
             </Label>
             <Input
               id="max_positions"
@@ -363,12 +465,170 @@ export function TradingSettings() {
           </div>
         </div>
 
-        {/* Active Strategies Selection */}
-        <div className="pt-4 border-t border-slate-200">
-          <h3 className="text-sm font-semibold text-slate-700 mb-4">Active Trading Strategies</h3>
-          <p className="text-xs text-slate-500 mb-4">
-            Select which backtested strategies should be used in live trading. Only strategies you manually select here will be active.
-          </p>
+        {/* ============================================ */}
+        {/* SECTION 3: TAKE PROFIT & STOP LOSS */}
+        {/* ============================================ */}
+        <div className="pt-4 border-t-2 border-slate-300 space-y-4">
+          <div className="pb-2 border-b-2 border-slate-300">
+            <h3 className="text-lg font-bold text-slate-800">3. Take Profit & Stop Loss</h3>
+            <p className="text-xs text-slate-500 mt-1">Configure exit conditions for positions</p>
+          </div>
+          
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="take_profit" className="font-semibold">
+                Take Profit Percentage
+                <span className="text-xs text-slate-500 font-normal ml-2">(0.1-100%)</span>
+              </Label>
+              <Input
+                id="take_profit"
+                type="number"
+                min="0.1"
+                max="100"
+                step="0.1"
+                value={settings.take_profit_percent}
+                onChange={(e) =>
+                  setSettings({
+                    ...settings,
+                    take_profit_percent: parseFloat(e.target.value) || 5.0,
+                  })
+                }
+                className="w-full"
+              />
+              <p className="text-xs text-slate-500">
+                Percentage above entry price (long) or below entry price (short) to take profit.
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="stop_loss" className="font-semibold">
+                Stop Loss Percentage
+                <span className="text-xs text-slate-500 font-normal ml-2">(0.1-50%)</span>
+              </Label>
+              <Input
+                id="stop_loss"
+                type="number"
+                min="0.1"
+                max="50"
+                step="0.1"
+                value={settings.stop_loss_percent}
+                onChange={(e) =>
+                  setSettings({
+                    ...settings,
+                    stop_loss_percent: parseFloat(e.target.value) || 3.0,
+                  })
+                }
+                className="w-full"
+              />
+              <p className="text-xs text-slate-500">
+                Percentage below entry price (long) or above entry price (short) to stop loss. Higher values allow more room for reversals.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* ============================================ */}
+        {/* SECTION 4: RISK MANAGEMENT */}
+        {/* ============================================ */}
+        <div className="pt-4 border-t-2 border-slate-300 space-y-4">
+          <div className="pb-2 border-b-2 border-slate-300">
+            <h3 className="text-lg font-bold text-slate-800">4. Risk Management</h3>
+            <p className="text-xs text-slate-500 mt-1">Advanced risk controls and position protection</p>
+          </div>
+          
+          <div className="space-y-4">
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="enable_trailing_stop"
+                checked={settings.enable_trailing_stop}
+                onChange={(e) => setSettings({ ...settings, enable_trailing_stop: e.target.checked })}
+                className="w-4 h-4 text-[#c0e156] focus:ring-[#c0e156] rounded"
+              />
+              <Label htmlFor="enable_trailing_stop">Enable Trailing Stop</Label>
+            </div>
+
+            {settings.enable_trailing_stop && (
+              <>
+                <div className="space-y-2">
+                  <Label htmlFor="trailing_stop_activation_pct">Trailing Stop Activation (%)</Label>
+                  <Input
+                    id="trailing_stop_activation_pct"
+                    type="number"
+                    min="0.1"
+                    step="0.1"
+                    value={settings.trailing_stop_activation_pct}
+                    onChange={(e) => setSettings({ ...settings, trailing_stop_activation_pct: parseFloat(e.target.value) || 5.0 })}
+                    className="w-full"
+                  />
+                  <p className="text-xs text-slate-500">Start trailing after X% profit</p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="trailing_stop_distance_pct">Trailing Stop Distance (%)</Label>
+                  <Input
+                    id="trailing_stop_distance_pct"
+                    type="number"
+                    min="0.1"
+                    step="0.1"
+                    value={settings.trailing_stop_distance_pct}
+                    onChange={(e) => setSettings({ ...settings, trailing_stop_distance_pct: parseFloat(e.target.value) || 3.0 })}
+                    className="w-full"
+                  />
+                  <p className="text-xs text-slate-500">Keep SL X% below peak profit</p>
+                </div>
+              </>
+            )}
+
+            <div className="space-y-2">
+              <Label htmlFor="max_position_hold_hours">Max Position Hold Time (hours)</Label>
+              <Input
+                id="max_position_hold_hours"
+                type="number"
+                min="0.1"
+                step="0.1"
+                value={settings.max_position_hold_hours}
+                onChange={(e) => setSettings({ ...settings, max_position_hold_hours: parseFloat(e.target.value) || 48.0 })}
+                className="w-full"
+              />
+            </div>
+
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="enable_drawdown_protection"
+                checked={settings.enable_drawdown_protection}
+                onChange={(e) => setSettings({ ...settings, enable_drawdown_protection: e.target.checked })}
+                className="w-4 h-4 text-[#c0e156] focus:ring-[#c0e156] rounded"
+              />
+              <Label htmlFor="enable_drawdown_protection">Enable Drawdown Protection</Label>
+            </div>
+
+            {settings.enable_drawdown_protection && (
+              <div className="space-y-2">
+                <Label htmlFor="max_drawdown_from_peak_pct">Max Drawdown from Peak (%)</Label>
+                <Input
+                  id="max_drawdown_from_peak_pct"
+                  type="number"
+                  min="0.1"
+                  step="0.1"
+                  value={settings.max_drawdown_from_peak_pct}
+                  onChange={(e) => setSettings({ ...settings, max_drawdown_from_peak_pct: parseFloat(e.target.value) || 5.0 })}
+                  className="w-full"
+                />
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* ============================================ */}
+        {/* SECTION 8: ACTIVE STRATEGIES */}
+        {/* ============================================ */}
+        <div className="pt-4 border-t-2 border-slate-300 space-y-4">
+          <div className="pb-2 border-b-2 border-slate-300">
+            <h3 className="text-lg font-bold text-slate-800">8. Active Trading Strategies</h3>
+            <p className="text-xs text-slate-500 mt-1">Select which backtested strategies should be used in live trading</p>
+          </div>
           
           {loadingStrategies ? (
             <div className="flex items-center justify-center py-8">
@@ -433,6 +693,184 @@ export function TradingSettings() {
               {settings.active_strategy_ids.length} strategy(ies) selected for live trading
             </p>
           )}
+        </div>
+
+        {/* ============================================ */}
+        {/* SECTION 5: PINESCRIPT ALERT SERVICE */}
+        {/* ============================================ */}
+        <div className="pt-4 border-t-2 border-slate-300 space-y-4">
+          <div className="pb-2 border-b-2 border-slate-300">
+            <h3 className="text-lg font-bold text-slate-800">5. PineScript Alert Service</h3>
+            <p className="text-xs text-slate-500 mt-1">Configure external PineScript alert monitoring</p>
+          </div>
+          
+          <div className="space-y-4">
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                id="alert_service_enabled"
+                checked={settings.alert_service_enabled}
+                onChange={(e) => setSettings({ ...settings, alert_service_enabled: e.target.checked })}
+                className="w-4 h-4 text-[#c0e156] focus:ring-[#c0e156] rounded"
+              />
+              <Label htmlFor="alert_service_enabled">Enable Alert Service</Label>
+            </div>
+
+            {settings.alert_service_enabled && (
+              <>
+                <div className="space-y-2">
+                  <Label htmlFor="alert_assets">Alert Assets</Label>
+                  <Input
+                    id="alert_assets"
+                    type="text"
+                    value={settings.alert_assets}
+                    onChange={(e) => setSettings({ ...settings, alert_assets: e.target.value })}
+                    placeholder="ZEC,BTC,ETH,SOL,BNB"
+                    className="w-full"
+                  />
+                  <p className="text-xs text-slate-500">Comma-separated list of assets to monitor</p>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="alert_timeframe">Alert Timeframe</Label>
+                  <Input
+                    id="alert_timeframe"
+                    type="text"
+                    value={settings.alert_timeframe}
+                    onChange={(e) => setSettings({ ...settings, alert_timeframe: e.target.value })}
+                    placeholder="15m"
+                    className="w-full"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="alert_risk_per_trade">Alert Risk per Trade (USD)</Label>
+                  <Input
+                    id="alert_risk_per_trade"
+                    type="number"
+                    min="1"
+                    step="0.1"
+                    value={settings.alert_risk_per_trade}
+                    onChange={(e) => setSettings({ ...settings, alert_risk_per_trade: parseFloat(e.target.value) || 30.0 })}
+                    className="w-full"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="alert_check_interval">Alert Check Interval (seconds)</Label>
+                  <Input
+                    id="alert_check_interval"
+                    type="number"
+                    min="1"
+                    value={settings.alert_check_interval}
+                    onChange={(e) => setSettings({ ...settings, alert_check_interval: parseInt(e.target.value) || 5 })}
+                    className="w-full"
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="alert_agent_endpoint">Alert Agent Endpoint</Label>
+                  <Input
+                    id="alert_agent_endpoint"
+                    type="text"
+                    value={settings.alert_agent_endpoint}
+                    onChange={(e) => setSettings({ ...settings, alert_agent_endpoint: e.target.value })}
+                    placeholder="http://localhost:5000/api/alert/signal"
+                    className="w-full"
+                  />
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* ============================================ */}
+        {/* SECTION 6: STRATEGY SETTINGS */}
+        {/* ============================================ */}
+        <div className="pt-4 border-t-2 border-slate-300 space-y-4">
+          <div className="pb-2 border-b-2 border-slate-300">
+            <h3 className="text-lg font-bold text-slate-800">6. Strategy Settings</h3>
+            <p className="text-xs text-slate-500 mt-1">Configure scalping and auto-strategy behavior</p>
+          </div>
+          
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="scalping_tp_percent">Scalping Take Profit (%)</Label>
+              <Input
+                id="scalping_tp_percent"
+                type="number"
+                min="0.1"
+                step="0.1"
+                value={settings.scalping_tp_percent}
+                onChange={(e) => setSettings({ ...settings, scalping_tp_percent: parseFloat(e.target.value) || 5.0 })}
+                className="w-full"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="scalping_sl_percent">Scalping Stop Loss (%)</Label>
+              <Input
+                id="scalping_sl_percent"
+                type="number"
+                min="0.1"
+                step="0.1"
+                value={settings.scalping_sl_percent}
+                onChange={(e) => setSettings({ ...settings, scalping_sl_percent: parseFloat(e.target.value) || 5.0 })}
+                className="w-full"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="auto_strategy_cache_minutes">Auto Strategy Cache (minutes)</Label>
+              <Input
+                id="auto_strategy_cache_minutes"
+                type="number"
+                min="0"
+                value={settings.auto_strategy_cache_minutes}
+                onChange={(e) => setSettings({ ...settings, auto_strategy_cache_minutes: parseInt(e.target.value) || 0 })}
+                className="w-full"
+              />
+              <p className="text-xs text-slate-500">Cache auto strategy selection (0 = re-evaluate every cycle)</p>
+            </div>
+          </div>
+        </div>
+
+        {/* ============================================ */}
+        {/* SECTION 7: LLM CONFIGURATION */}
+        {/* ============================================ */}
+        <div className="pt-4 border-t-2 border-slate-300 space-y-4">
+          <div className="pb-2 border-b-2 border-slate-300">
+            <h3 className="text-lg font-bold text-slate-800">7. LLM Configuration</h3>
+            <p className="text-xs text-slate-500 mt-1">Configure AI model settings</p>
+          </div>
+          
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="llm_model">LLM Model</Label>
+              <select
+                id="llm_model"
+                value={settings.llm_model}
+                onChange={(e) => setSettings({ ...settings, llm_model: e.target.value })}
+                className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#c0e156]"
+              >
+                <option value="deepseek-reasoner">DeepSeek Reasoner (Best performance)</option>
+                <option value="deepseek-chat">DeepSeek Chat (Faster, supports function calling)</option>
+              </select>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="deepseek_max_tokens">DeepSeek Max Tokens</Label>
+              <Input
+                id="deepseek_max_tokens"
+                type="number"
+                min="1000"
+                step="1000"
+                value={settings.deepseek_max_tokens}
+                onChange={(e) => setSettings({ ...settings, deepseek_max_tokens: parseInt(e.target.value) || 20000 })}
+                className="w-full"
+              />
+            </div>
+          </div>
         </div>
 
         {/* Message */}

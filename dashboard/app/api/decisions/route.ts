@@ -38,10 +38,11 @@ export async function GET(request: NextRequest) {
     const limit = parseInt(searchParams.get("limit") || "20");
 
     // Fetch from Python agent's /diary endpoint (runs on port 3000)
+    // Use shorter timeout and no retries to fail fast if agent isn't running
     const data = await fetchJsonWithRetry<any>(
       `${PYTHON_API_URL}/diary?limit=${limit}`,
-      { timeoutMs: 5000, cache: "no-store" },
-      1,
+      { timeoutMs: 3000, cache: "no-store" },
+      0, // No retries - fail fast and fallback to Supabase
       100
     );
 
@@ -77,16 +78,25 @@ export async function GET(request: NextRequest) {
     cacheSet("decisions", decisions, 5000);
     return NextResponse.json(decisions);
   } catch (error: any) {
-    // Silently handle connection errors - Python agent may not be running
-    // Only log non-connection errors in development
-    const isConnectionError = error.code === 'ECONNREFUSED' || 
-                            error.message?.includes('fetch failed') ||
-                            error.message?.includes('ECONNREFUSED');
+    // Silently handle connection/404/timeout errors - Python agent may not be running
+    // These are expected when the agent isn't running, so we don't log them
+    const isExpectedError = 
+      error.code === 'ECONNREFUSED' || 
+      error.name === 'AbortError' ||
+      error.message?.includes('fetch failed') ||
+      error.message?.includes('ECONNREFUSED') ||
+      error.message?.includes('HTTP 404') ||
+      error.message?.includes('HTTP 500') ||
+      error.message?.includes('AbortError') ||
+      error.message?.includes('timeout') ||
+      error.message?.includes('network');
     
-    if (!isConnectionError && process.env.NODE_ENV === 'development') {
+    // Only log unexpected errors in development
+    if (!isExpectedError && process.env.NODE_ENV === 'development') {
       console.error("Failed to fetch decisions from Python API:", error);
     }
     
+    // Try cached data first
     const cached = cacheGet<any[]>("decisions");
     if (cached) return NextResponse.json(cached);
     // Continue to Supabase fallback

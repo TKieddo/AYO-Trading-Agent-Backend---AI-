@@ -11,12 +11,12 @@ async def get_trading_settings() -> Dict[str, Any]:
     """Fetch trading settings from database API. ALWAYS uses database settings.
     
     Returns:
-        Dictionary with leverage, take_profit_percent, stop_loss_percent, position sizing settings
+        Dictionary with all trading settings including leverage, TP%, SL%, assets, strategy, etc.
     """
     # ALWAYS try to fetch from database API first (Next.js backend)
     try:
         # Get API URL from env or use default
-        api_url = CONFIG.get("NEXT_PUBLIC_API_URL") or "http://localhost:3001"
+        api_url = CONFIG.get("NEXT_PUBLIC_API_URL") or CONFIG.get("next_public_base_url") or "http://localhost:3001"
         async with aiohttp.ClientSession() as session:
             async with session.get(
                 f"{api_url}/api/trading/settings",
@@ -24,17 +24,52 @@ async def get_trading_settings() -> Dict[str, Any]:
             ) as resp:
                 if resp.status == 200:
                     data = await resp.json()
-                    logging.info(f"✅ Fetched trading settings from database: leverage={data.get('leverage')}, target_profit={data.get('target_profit_per_1pct_move')}")
                     margin_per_pos = data.get("margin_per_position")
+                    asset_leverage_overrides = data.get("asset_leverage_overrides", {}) or {}
+                    asset_timeframes = data.get("asset_timeframes", {}) or {}
+                    
+                    logging.info(f"✅ Fetched trading settings from database: leverage={data.get('leverage')}, strategy={data.get('strategy')}, exchange={data.get('exchange')}")
+                    
                     return {
+                        # Position sizing
                         "leverage": int(data.get("leverage", 10)),
                         "take_profit_percent": float(data.get("take_profit_percent", 5.0)),
                         "stop_loss_percent": float(data.get("stop_loss_percent", 3.0)),
                         "target_profit_per_1pct_move": float(data.get("target_profit_per_1pct_move", 1.0)),
-                        "allocation_per_position": data.get("allocation_per_position"),  # Can be None
-                        "margin_per_position": float(margin_per_pos) if margin_per_pos is not None else None,  # Can be None
+                        "allocation_per_position": data.get("allocation_per_position"),
+                        "margin_per_position": float(margin_per_pos) if margin_per_pos is not None else None,
                         "max_positions": int(data.get("max_positions", 6)),
                         "position_sizing_mode": data.get("position_sizing_mode", "auto"),
+                        # Trading configuration
+                        "multi_exchange_mode": bool(data.get("multi_exchange_mode", False)),
+                        "assets": data.get("assets", "BTC ETH SOL"),
+                        "interval": data.get("interval", "5m"),
+                        "strategy": data.get("strategy", "auto") or "auto",
+                        "exchange": data.get("exchange", "binance"),
+                        # Alert service
+                        "alert_service_enabled": bool(data.get("alert_service_enabled", False)),
+                        "alert_risk_per_trade": float(data.get("alert_risk_per_trade", 30.0)),
+                        "alert_check_interval": int(data.get("alert_check_interval", 5)),
+                        "alert_agent_endpoint": data.get("alert_agent_endpoint", "http://localhost:5000/api/alert/signal"),
+                        "alert_assets": data.get("alert_assets", "ZEC,BTC,ETH,SOL,BNB"),
+                        "alert_timeframe": data.get("alert_timeframe", "15m"),
+                        # Risk management
+                        "enable_trailing_stop": bool(data.get("enable_trailing_stop", True)),
+                        "trailing_stop_activation_pct": float(data.get("trailing_stop_activation_pct", 5.0)),
+                        "trailing_stop_distance_pct": float(data.get("trailing_stop_distance_pct", 3.0)),
+                        "max_position_hold_hours": float(data.get("max_position_hold_hours", 48.0)),
+                        "enable_drawdown_protection": bool(data.get("enable_drawdown_protection", True)),
+                        "max_drawdown_from_peak_pct": float(data.get("max_drawdown_from_peak_pct", 5.0)),
+                        # Scalping strategy
+                        "scalping_tp_percent": float(data.get("scalping_tp_percent", 5.0)),
+                        "scalping_sl_percent": float(data.get("scalping_sl_percent", 5.0)),
+                        "auto_strategy_cache_minutes": int(data.get("auto_strategy_cache_minutes", 0)),
+                        # Per-asset overrides
+                        "asset_leverage_overrides": asset_leverage_overrides,
+                        "asset_timeframes": asset_timeframes,
+                        # LLM configuration
+                        "llm_model": data.get("llm_model", "deepseek-reasoner"),
+                        "deepseek_max_tokens": int(data.get("deepseek_max_tokens", 20000)),
                     }
                 else:
                     logging.warning(f"⚠️  Failed to fetch trading settings from database (status {resp.status}), using defaults")
@@ -42,10 +77,17 @@ async def get_trading_settings() -> Dict[str, Any]:
         logging.warning(f"⚠️  Could not fetch trading settings from database API: {e}. Using defaults. Make sure dashboard is running.")
     
     # Fallback to env/config defaults (ONLY if database is unavailable)
-    # This should rarely happen - database settings should always be used
     logging.warning("⚠️  Using .env defaults as fallback. Database settings should be used instead!")
     margin_per_pos = CONFIG.get("margin_per_position")
+    asset_leverage_overrides = {}
+    # Parse per-asset leverage from env (e.g., BTC_LEVERAGE=25)
+    for key, value in CONFIG.items():
+        if key.endswith("_LEVERAGE") and isinstance(value, (int, float)):
+            asset = key.replace("_LEVERAGE", "").upper()
+            asset_leverage_overrides[asset] = int(value)
+    
     return {
+        # Position sizing
         "leverage": CONFIG.get("default_leverage", 10),
         "take_profit_percent": CONFIG.get("take_profit_percent", 5),
         "stop_loss_percent": CONFIG.get("stop_loss_percent", 3),
@@ -54,6 +96,36 @@ async def get_trading_settings() -> Dict[str, Any]:
         "margin_per_position": float(margin_per_pos) if margin_per_pos is not None else None,
         "max_positions": CONFIG.get("max_positions", 6),
         "position_sizing_mode": CONFIG.get("position_sizing_mode", "auto"),
+        # Trading configuration
+        "multi_exchange_mode": CONFIG.get("MULTI_EXCHANGE_MODE", False),
+        "assets": CONFIG.get("assets") or CONFIG.get("ASSETS", "BTC ETH SOL"),
+        "interval": CONFIG.get("interval") or CONFIG.get("INTERVAL", "5m"),
+        "strategy": CONFIG.get("strategy") or CONFIG.get("STRATEGY", "auto") or "auto",
+        "exchange": CONFIG.get("exchange") or CONFIG.get("EXCHANGE", "binance"),
+        # Alert service
+        "alert_service_enabled": CONFIG.get("ALERT_SERVICE_ENABLED", False),
+        "alert_risk_per_trade": CONFIG.get("ALERT_RISK_PER_TRADE", 30.0),
+        "alert_check_interval": CONFIG.get("ALERT_CHECK_INTERVAL", 5),
+        "alert_agent_endpoint": CONFIG.get("ALERT_AGENT_ENDPOINT", "http://localhost:5000/api/alert/signal"),
+        "alert_assets": CONFIG.get("ALERT_ASSETS", "ZEC,BTC,ETH,SOL,BNB"),
+        "alert_timeframe": CONFIG.get("ALERT_TIMEFRAME", "15m"),
+        # Risk management
+        "enable_trailing_stop": CONFIG.get("enable_trailing_stop", True),
+        "trailing_stop_activation_pct": CONFIG.get("trailing_stop_activation_pct", 5.0),
+        "trailing_stop_distance_pct": CONFIG.get("trailing_stop_distance_pct", 3.0),
+        "max_position_hold_hours": CONFIG.get("max_position_hold_hours", 48.0),
+        "enable_drawdown_protection": CONFIG.get("enable_drawdown_protection", True),
+        "max_drawdown_from_peak_pct": CONFIG.get("max_drawdown_from_peak_pct", 5.0),
+        # Scalping strategy
+        "scalping_tp_percent": CONFIG.get("scalping_tp_percent", 5.0),
+        "scalping_sl_percent": CONFIG.get("scalping_sl_percent", 5.0),
+        "auto_strategy_cache_minutes": CONFIG.get("auto_strategy_cache_minutes", 0),
+        # Per-asset overrides
+        "asset_leverage_overrides": asset_leverage_overrides,
+        "asset_timeframes": {},  # Would need to parse from env if needed
+        # LLM configuration
+        "llm_model": CONFIG.get("llm_model", "deepseek-reasoner"),
+        "deepseek_max_tokens": CONFIG.get("deepseek_max_tokens", 20000),
     }
 
 

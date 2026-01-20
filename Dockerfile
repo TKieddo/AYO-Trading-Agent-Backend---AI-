@@ -19,9 +19,11 @@ RUN pip install --no-cache-dir poetry && \
 # Copy source
 COPY src ./src
 
-# API defaults
-ENV APP_PORT=3000
-EXPOSE 3000
+# API defaults (App Platform uses PORT env var, default to 8080)
+ENV APP_PORT=8080
+ENV API_PORT=8080
+ENV API_HOST=0.0.0.0
+EXPOSE 8080
 
 # Default command: run as module to keep absolute imports working
 ENTRYPOINT ["poetry", "run", "python", "-m", "src.main"]

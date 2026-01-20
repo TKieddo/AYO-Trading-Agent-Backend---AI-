@@ -24,11 +24,12 @@ export async function fetchJsonWithRetry<T = any>(
       return (await resp.json()) as T;
     } catch (e: any) {
       lastError = e;
-      // Don't retry on connection refused errors
+      // Don't retry on connection refused errors or 404s (agent not running)
       const isConnectionError = e.code === 'ECONNREFUSED' || 
                                 e.name === 'AbortError' ||
                                 e.message?.includes('fetch failed') ||
-                                e.message?.includes('ECONNREFUSED');
+                                e.message?.includes('ECONNREFUSED') ||
+                                e.message?.includes('HTTP 404');
       if (isConnectionError || attempt >= retries) {
         throw lastError;
       }

@@ -21,6 +21,19 @@ export async function GET() {
     clearTimeout(timeoutId);
 
     if (!response.ok) {
+      // 404 means agent isn't running - return gracefully without error
+      if (response.status === 404) {
+        return NextResponse.json(
+          { 
+            connected: false,
+            status: "offline",
+            error: "Python agent is not running",
+            timestamp: new Date().toISOString()
+          },
+          { status: 200 } // Return 200 so frontend can handle it gracefully
+        );
+      }
+      
       const errorText = await response.text().catch(() => "");
       return NextResponse.json(
         { 
@@ -53,7 +66,18 @@ export async function GET() {
       },
     });
   } catch (error: any) {
-    console.error("Status check error:", error);
+    // Only log unexpected errors - connection errors are expected when agent isn't running
+    const isExpectedError = 
+      error.name === "AbortError" || 
+      error.name === "TimeoutError" ||
+      error.code === 'ECONNREFUSED' ||
+      error.message?.includes("aborted") ||
+      error.message?.includes("fetch failed") ||
+      error.message?.includes("ECONNREFUSED");
+    
+    if (!isExpectedError && process.env.NODE_ENV === 'development') {
+      console.error("Status check error:", error);
+    }
     
     // Handle timeout or network errors
     if (error.name === "AbortError" || error.name === "TimeoutError" || error.message?.includes("aborted")) {
