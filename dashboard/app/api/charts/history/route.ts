@@ -31,12 +31,12 @@ export async function GET(req: NextRequest) {
     const numBars = Math.ceil((to - from) / (intervalMinutes * 60));
 
     // Fetch price data from your API
-    const BASE = (process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3001").replace(/\/$/, "");
+    const PYTHON_API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000").replace(/\/$/, "");
     
     try {
       // Try to fetch from Python agent first
       const response = await fetch(
-        `${BASE}/agent/api/prices`,
+        `${PYTHON_API_URL}/api/prices`,
         {
           method: "GET",
           headers: { "Content-Type": "application/json" },

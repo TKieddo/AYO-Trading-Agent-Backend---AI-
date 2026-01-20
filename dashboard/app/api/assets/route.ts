@@ -12,8 +12,8 @@ export async function GET() {
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 5000);
-    const base = (process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3001").replace(/\/$/, "");
-    const resp = await fetch(`${base}/agent/positions`, { signal: controller.signal, cache: "no-store" });
+    const pythonApiUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000").replace(/\/$/, "");
+    const resp = await fetch(`${pythonApiUrl}/positions`, { signal: controller.signal, cache: "no-store" });
     clearTimeout(timeoutId);
     if (resp.ok) {
       const data = await resp.json();
@@ -34,8 +34,8 @@ export async function GET() {
   try {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 5000);
-    const base = (process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3001").replace(/\/$/, "");
-    const resp = await fetch(`${base}/agent/diary?limit=500`, { signal: controller.signal, cache: "no-store" });
+    const pythonApiUrl = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000").replace(/\/$/, "");
+    const resp = await fetch(`${pythonApiUrl}/diary?limit=500`, { signal: controller.signal, cache: "no-store" });
     clearTimeout(timeoutId);
     if (resp.ok) {
       const data = await resp.json();

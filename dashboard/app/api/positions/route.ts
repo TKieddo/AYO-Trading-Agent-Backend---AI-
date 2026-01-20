@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { cacheGet, cacheSet } from "@/lib/http";
-const BASE = (process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3001").replace(/\/$/, "");
+const PYTHON_API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000").replace(/\/$/, "");
 
 export async function GET() {
   try {
@@ -9,7 +9,7 @@ export async function GET() {
     const timeoutId = setTimeout(() => controller.abort(), 20000);
     
     // Fetch from Python agent's /positions endpoint
-    const response = await fetch(`${BASE}/agent/positions`, {
+    const response = await fetch(`${PYTHON_API_URL}/positions`, {
       signal: controller.signal,
       cache: "no-store",
       headers: {

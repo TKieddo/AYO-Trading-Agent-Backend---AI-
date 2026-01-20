@@ -4,7 +4,7 @@ import { getServerSupabase } from "@/lib/supabase/server";
 import { fetchJsonWithRetry } from "@/lib/http";
 import { persistMetrics } from "@/lib/supabase/persist";
 
-const BASE = (process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3001").replace(/\/$/, "");
+const PYTHON_API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000").replace(/\/$/, "");
 
 /**
  * Calculate daily PNL from trades executed today
@@ -61,8 +61,8 @@ export async function GET() {
   try {
     // Fetch account status from Python agent
     const [statusResponse, positionsResponse] = await Promise.allSettled([
-      fetchJsonWithRetry<any>(`${BASE}/agent/status`, { timeoutMs: 20000, cache: "no-store" }, 2, 300),
-      fetchJsonWithRetry<any[]>(`${BASE}/agent/positions`, { timeoutMs: 20000, cache: "no-store" }, 2, 300),
+      fetchJsonWithRetry<any>(`${PYTHON_API_URL}/status`, { timeoutMs: 20000, cache: "no-store" }, 2, 300),
+      fetchJsonWithRetry<any[]>(`${PYTHON_API_URL}/positions`, { timeoutMs: 20000, cache: "no-store" }, 2, 300),
     ]);
 
     let accountValue = 0;

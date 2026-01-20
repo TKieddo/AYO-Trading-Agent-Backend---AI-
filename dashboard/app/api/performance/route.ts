@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getSupabase } from "@/lib/supabase/client";
 import { cacheGet, cacheSet } from "@/lib/http";
 import { persistPerformance } from "@/lib/supabase/persist";
-const BASE = (process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3001").replace(/\/$/, "");
+const PYTHON_API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000").replace(/\/$/, "");
 
 export async function GET() {
   try {
@@ -10,7 +10,7 @@ export async function GET() {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 20000);
     
-    const response = await fetch(`${BASE}/agent/api/performance`, {
+    const response = await fetch(`${PYTHON_API_URL}/api/performance`, {
       signal: controller.signal,
       method: "GET",
       headers: { "Content-Type": "application/json" },
@@ -46,7 +46,7 @@ export async function GET() {
 
   // Fallback 1: derive from PNL API if Supabase missing
   try {
-    const pnlResp = await fetch(`${BASE}/api/pnl`, { cache: "no-store" });
+    const pnlResp = await fetch(`${PYTHON_API_URL}/api/pnl`, { cache: "no-store" });
     if (pnlResp.ok) {
       const pnlData = await pnlResp.json();
       if (Array.isArray(pnlData) && pnlData.length > 0) {

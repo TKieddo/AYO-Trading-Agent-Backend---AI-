@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getSupabase } from "@/lib/supabase/client";
 import { fetchJsonWithRetry, cacheGet, cacheSet } from "@/lib/http";
 import { persistLogs } from "@/lib/supabase/persist";
-const BASE = (process.env.NEXT_PUBLIC_BASE_URL || "http://localhost:3001").replace(/\/$/, "");
+const PYTHON_API_URL = (process.env.NEXT_PUBLIC_API_URL || "http://localhost:3000").replace(/\/$/, "");
 
 export async function GET(request: NextRequest) {
   try {
@@ -12,7 +12,7 @@ export async function GET(request: NextRequest) {
 
     // Fetch from Python agent's /logs endpoint (request JSON format)
     const logs = await fetchJsonWithRetry<any[]>(
-      `${BASE}/agent/logs?limit=${limit}&path=${path}&format=json`,
+      `${PYTHON_API_URL}/logs?limit=${limit}&path=${path}&format=json`,
       { timeoutMs: 20000, cache: "no-store" },
       2,
       300
