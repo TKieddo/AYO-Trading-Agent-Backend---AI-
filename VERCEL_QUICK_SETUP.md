@@ -22,6 +22,7 @@
 - Visit: https://railway.app
 - Connect GitHub repo
 - Deploy Python service
+- **Important:** Add environment variables (see `RAILWAY_QUICK_FIX.md`)
 - Cost: ~$5-10/month
 
 **Option C: Render**
