@@ -153,17 +153,30 @@ export function PnLChart({ externalRange, showRangeToggle = true }: PnLChartProp
     if (effectiveRange === "week" || externalRange === "7d") {
       // API returns old labels: ["M", "T", "W", "T", "F", "Sa", "Su"] where both Tue and Thu are "T"
       // We need to map them to new display labels: ["M", "Tu", "W", "Th", "F", "Sa", "Su"]
-      const apiLabels = ["M", "T", "W", "T", "F", "Sa", "Su"]; // Old API format (index: 0=M, 1=Tue, 2=W, 3=Thu, 4=F, 5=Sa, 6=Su)
       const displayLabels = ["M", "Tu", "W", "Th", "F", "Sa", "Su"]; // New display format
       
-      // API returns data in order by day index, so we can map by array position
-      // Since API groups by day of week, dataArray will have entries in order: M, T (Tue), W, T (Thu), F, Sa, Su
+      // Create a map by day index (0=Monday, 1=Tuesday, ..., 6=Sunday)
+      // Use timestamp to determine actual day of week, not just label
+      const dayIndexMap = new Map<number, number>(); // dayIndex -> value
+      
+      if (data && data.length > 0) {
+        for (const p of data) {
+          // Parse timestamp to get actual day of week
+          const timestamp = p.timestamp;
+          if (timestamp) {
+            const date = new Date(timestamp);
+            const dayOfWeek = date.getDay(); // 0=Sunday, 1=Monday, ..., 6=Saturday
+            // Convert to our day index: 0=Monday, 1=Tuesday, ..., 6=Sunday
+            const dayIndex = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+            dayIndexMap.set(dayIndex, Number(p.daily_pnl ?? 0));
+          }
+        }
+      }
+      
+      // Map display labels to day indices and get values
       return displayLabels.map((displayLabel, index) => {
-        // Get value from dataArray by index (API returns in day order: M, T, W, T, F, Sa, Su)
-        // For Tuesday (index 1) and Thursday (index 3), both have label "T" in API, but they're in different positions
-        const dataEntry = dataArray[index];
-        const value = dataEntry ? dataEntry.value : (dataMap.get(apiLabels[index]) ?? 0);
-        
+        // index corresponds to day index: 0=M, 1=Tu, 2=W, 3=Th, 4=F, 5=Sa, 6=Su
+        const value = dayIndexMap.get(index) ?? 0;
         return { label: displayLabel, value };
       });
     }
