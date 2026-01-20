@@ -83,6 +83,8 @@ export function TradingSettings() {
     llm_model: "deepseek-reasoner",
     deepseek_max_tokens: 20000,
     next_public_base_url: "http://localhost:3001",
+    stop_loss_usd: null,
+    take_profit_strict_enforcement: false,
   });
   const [strategies, setStrategies] = useState<any[]>([]);
   const [loadingStrategies, setLoadingStrategies] = useState(false);
