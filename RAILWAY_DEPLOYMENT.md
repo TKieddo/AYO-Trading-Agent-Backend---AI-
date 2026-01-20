@@ -73,8 +73,10 @@ TAAPI_API_KEY=your_taapi_key_here
 
 # Supabase (OPTIONAL - for trade syncing to database)
 # Only needed if you want trades automatically saved to Supabase
+# NOTE: Dashboard (Vercel) needs Supabase for settings page, but agent doesn't need it directly
+# Agent fetches settings from dashboard API, which reads from Supabase
 SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_KEY=your_supabase_service_role_key
+SUPABASE_KEY=your_supabase_anon_key
 # OR use SUPABASE_SERVICE_KEY (recommended for server-side, bypasses RLS)
 SUPABASE_SERVICE_KEY=your_supabase_service_role_key
 

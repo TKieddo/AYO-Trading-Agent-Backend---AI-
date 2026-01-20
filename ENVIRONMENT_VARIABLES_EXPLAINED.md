@@ -56,11 +56,36 @@ TAAPI_API_KEY=your_taapi_key
 - **Without it:** Agent uses TA-Lib + Binance data instead (works fine)
 - **Status:** Optional - kept for backwards compatibility
 
-### Supabase Variables (Optional)
+### Supabase Variables (Optional for Agent, Required for Dashboard)
+
+**For Python Agent (Railway):**
 ```env
+# NOT needed directly - agent fetches settings from dashboard API
+```
+
+**For Dashboard (Vercel) - REQUIRED for Settings Page:**
+```env
+NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your_anon_key
+SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
+```
+
+**How it works:**
+1. **Dashboard (Vercel)** stores trading settings in Supabase
+2. **Python Agent** fetches settings from Dashboard API: `{dashboard_url}/api/trading/settings`
+3. Dashboard API reads from Supabase and returns to agent
+
+**Without Supabase:**
+- ❌ Dashboard settings page won't work (can't save/load settings)
+- ⚠️ Agent will fall back to `.env` defaults (but can't use dashboard settings)
+- ✅ Agent still runs, but you can't change settings via dashboard
+
+**For Trade Syncing (Separate Feature):**
+```env
+# Python Agent only (for syncing trades to database)
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_KEY=your_anon_key
-# OR (recommended for server-side)
+# OR (recommended)
 SUPABASE_SERVICE_KEY=your_service_role_key
 ```
 - **Why:** Automatically syncs trades to Supabase database
@@ -79,7 +104,8 @@ SUPABASE_SERVICE_KEY=your_service_role_key
 | `BINANCE_API_KEY` + `BINANCE_API_SECRET` | ✅ **YES** (if using Binance) | ❌ Can't connect to Binance |
 | `ASTER_*` credentials | ✅ **YES** (if using Aster) | ❌ Can't connect to Aster |
 | `TAAPI_API_KEY` | ❌ No | ✅ Uses TA-Lib + Binance instead |
-| `SUPABASE_URL` + `SUPABASE_KEY` | ❌ No | ✅ Agent runs, but trades not synced to DB |
+| `SUPABASE_URL` + `SUPABASE_KEY` (Agent) | ❌ No | ✅ Agent runs, but trades not synced to DB |
+| `NEXT_PUBLIC_SUPABASE_*` (Dashboard) | ✅ **YES** | ❌ Dashboard settings page won't work |
 
 ---
 
