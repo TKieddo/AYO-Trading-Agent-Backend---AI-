@@ -746,6 +746,9 @@ def main():
                     "per_asset_leverage": per_asset_leverage,  # Per-asset leverage overrides (MANDATORY)
                     "take_profit_percent": tp_percent,
                     "stop_loss_percent": sl_percent,
+                    "scalping_tp_percent": scalping_tp_percent,  # Scalping strategy TP%
+                    "scalping_sl_percent": scalping_sl_percent,  # Scalping strategy SL%
+                    "take_profit_strict_enforcement": take_profit_strict_enforcement,  # If true, TP must be strictly enforced
                     "margin_per_position": trading_settings.get("margin_per_position"),  # MANDATORY - always use margin mode
                     "max_positions": trading_settings.get("max_positions", 5),
                     "position_sizing_mode": "margin",  # ALWAYS margin mode - system enforces this

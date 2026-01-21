@@ -111,13 +111,35 @@ class ScalpingStrategy(StrategyInterface):
         
         for asset in assets:
             try:
-                # If we have a position, hold (let TP/SL and automatic protections handle exits)
+                # If we have a position, check TP/SL and decide whether to close
                 if asset in assets_with_positions:
-                    decision = self._create_hold_decision(
-                        asset, 
-                        "Position active. System automatically handles: TP/SL, trailing stops (after 5% profit), "
-                        "24h max hold time, and drawdown protection (5% from peak)."
-                    )
+                    # Get position data from context to check PnL
+                    positions_data = context_dict.get("positions_data", {}).get("positions", [])
+                    position_info = next((p for p in positions_data if p.get("asset") == asset), None)
+                    
+                    if position_info:
+                        pnl_percent = position_info.get("pnl_percent", 0)
+                        # Get scalping TP from trading settings
+                        trading_settings = context_dict.get("trading_settings", {})
+                        scalping_tp = trading_settings.get("scalping_tp_percent", 5.0)
+                        
+                        # Check if TP is reached - if so, close the position
+                        if pnl_percent is not None and pnl_percent >= scalping_tp:
+                            decision = self._create_close_decision(
+                                asset,
+                                f"Scalping TP reached: {pnl_percent:.2f}% >= {scalping_tp}% - taking profit",
+                                margin_per_position
+                            )
+                        else:
+                            decision = self._create_hold_decision(
+                                asset, 
+                                f"Position active. PnL: {pnl_percent:.2f}%. Monitor for TP ({scalping_tp}%) or exit conditions."
+                            )
+                    else:
+                        decision = self._create_hold_decision(
+                            asset, 
+                            "Position active. Monitor for TP/SL or exit conditions."
+                        )
                 else:
                     decision = self._check_entry_conditions(
                         asset, 
@@ -355,6 +377,20 @@ class ScalpingStrategy(StrategyInterface):
             "sl_price": round(sl_price, 2),
             "exit_plan": exit_plan,
             "rationale": rationale
+        }
+    
+    def _create_close_decision(self, asset: str, reason: str, margin_per_position: Optional[float]) -> Dict[str, Any]:
+        """Create a decision to close an existing position."""
+        # Determine if we need to buy (close short) or sell (close long)
+        # We'll let the system determine the direction based on existing position
+        return {
+            "asset": asset,
+            "action": "close",  # System will determine buy/sell based on position
+            "allocation_usd": 0,  # No new allocation needed for closing
+            "rationale": reason,
+            "tp_price": 0,
+            "sl_price": 0,
+            "exit_plan": reason
         }
     
     def _create_hold_decision(self, asset: str, reason: str) -> Dict[str, Any]:
