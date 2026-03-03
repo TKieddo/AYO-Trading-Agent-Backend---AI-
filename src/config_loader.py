@@ -161,6 +161,8 @@ CONFIG = {
     "pair_hunter_perf_filter_min_trades": _get_int("PAIR_HUNTER_PERF_FILTER_MIN_TRADES", 6),  # Minimum completed trades before filtering weak pairs
     "pair_hunter_perf_filter_min_win_rate": _get_float("PAIR_HUNTER_PERF_FILTER_MIN_WIN_RATE", 25.0),  # Filter pair if win rate below this threshold
     "pair_hunter_perf_filter_min_expectancy_usd": _get_float("PAIR_HUNTER_PERF_FILTER_MIN_EXPECTANCY_USD", -1.0),  # Filter pair if expectancy/trade below this threshold
+    "pair_hunter_data_fail_threshold": _get_int("PAIR_HUNTER_DATA_FAIL_THRESHOLD", 3),  # Consecutive TA-data failures before temporary exclusion
+    "pair_hunter_exclusion_cooldown_minutes": _get_int("PAIR_HUNTER_EXCLUSION_COOLDOWN_MINUTES", 180),  # Exclusion window for repeatedly invalid symbols
     # Webhook notifications (WhatsApp, Discord, etc.)
     "webhook_url": _get_env("WEBHOOK_URL"),  # URL to POST trade notifications (e.g., Telegram bot, Discord webhook)
     "enable_webhook_notifications": _get_bool("ENABLE_WEBHOOK_NOTIFICATIONS", False),  # Enable webhook alerts

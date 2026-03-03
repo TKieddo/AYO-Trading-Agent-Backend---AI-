@@ -108,6 +108,10 @@ CREATE TABLE IF NOT EXISTS pair_hunter_stats (
   total_pnl_percent DECIMAL(20, 8) NOT NULL DEFAULT 0,
   expectancy_usd DECIMAL(20, 8) NOT NULL DEFAULT 0,
   expectancy_percent DECIMAL(20, 8) NOT NULL DEFAULT 0,
+  data_fail_count INTEGER NOT NULL DEFAULT 0,
+  excluded_until TIMESTAMPTZ,
+  exclusion_reason TEXT,
+  last_data_error TEXT,
   last_close_reason TEXT,
   last_updated TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()

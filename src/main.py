@@ -13,7 +13,7 @@ import asyncio
 import logging
 import time
 from collections import deque, OrderedDict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import math  # For Sharpe
 from dotenv import load_dotenv
 import os
@@ -336,10 +336,10 @@ def main():
         nonlocal pair_hunter_stats
         api_url = _get_dashboard_api_url()
         try:
-            async with aiohttp.ClientSession() as session:
+            async with ClientSession() as session:
                 async with session.get(
                     f"{api_url}/api/pair-hunter/stats",
-                    timeout=aiohttp.ClientTimeout(total=8)
+                    timeout=ClientTimeout(total=8)
                 ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
@@ -361,11 +361,11 @@ def main():
             "stats": stat_row
         }
         try:
-            async with aiohttp.ClientSession() as session:
+            async with ClientSession() as session:
                 async with session.post(
                     f"{api_url}/api/pair-hunter/stats",
                     json=payload,
-                    timeout=aiohttp.ClientTimeout(total=8)
+                    timeout=ClientTimeout(total=8)
                 ) as resp:
                     if resp.status not in (200, 201):
                         body = await resp.text()
@@ -406,6 +406,9 @@ def main():
             "total_pnl_percent": round(total_pnl_percent, 4),
             "expectancy_usd": round(expectancy_usd, 4),
             "expectancy_percent": round(expectancy_percent, 4),
+            "data_fail_count": 0,  # Reset TA data failures after a completed trade cycle
+            "excluded_until": None,
+            "exclusion_reason": "",
             "last_close_reason": close_reason,
             "last_updated": datetime.now(timezone.utc).isoformat()
         }
@@ -415,6 +418,79 @@ def main():
             f"📊 Pair Hunter stats {key}: trades={total_trades}, win_rate={win_rate:.1f}%, "
             f"expectancy=${expectancy_usd:.2f}/trade"
         )
+
+    def _is_pair_temporarily_excluded(asset: str) -> tuple[bool, str]:
+        """Return exclusion status for an asset based on excluded_until timestamp."""
+        key = (asset or "").upper().strip()
+        if not key:
+            return False, ""
+        stats = pair_hunter_stats.get(key, {})
+        excluded_until_raw = stats.get("excluded_until")
+        if not excluded_until_raw:
+            return False, ""
+        try:
+            excluded_until = datetime.fromisoformat(str(excluded_until_raw).replace("Z", "+00:00"))
+            if excluded_until.tzinfo is None:
+                excluded_until = excluded_until.replace(tzinfo=timezone.utc)
+            now_utc = datetime.now(timezone.utc)
+            if excluded_until > now_utc:
+                remaining_mins = int((excluded_until - now_utc).total_seconds() // 60)
+                return True, f"{max(1, remaining_mins)}m remaining"
+            # exclusion expired; clear it
+            stats["excluded_until"] = None
+            stats["exclusion_reason"] = ""
+            stats["data_fail_count"] = 0
+            pair_hunter_stats[key] = stats
+            _save_pair_hunter_stats_local()
+            return False, ""
+        except Exception:
+            return False, ""
+
+    async def _record_pair_hunter_data_failure(asset: str, reason: str):
+        """Track TA data failures and temporarily exclude repeated offenders."""
+        key = (asset or "").upper().strip()
+        if not key:
+            return
+
+        fail_threshold = int(CONFIG.get("pair_hunter_data_fail_threshold", 3) or 3)
+        cooldown_minutes = int(CONFIG.get("pair_hunter_exclusion_cooldown_minutes", 180) or 180)
+        now_utc = datetime.now(timezone.utc)
+
+        stats = pair_hunter_stats.get(key, {})
+        fail_count = int(stats.get("data_fail_count", 0) or 0) + 1
+        stats["data_fail_count"] = fail_count
+        stats["last_data_error"] = reason
+        stats["last_updated"] = now_utc.isoformat()
+
+        if fail_count >= fail_threshold:
+            excluded_until = now_utc + timedelta(minutes=cooldown_minutes)
+            stats["excluded_until"] = excluded_until.isoformat()
+            stats["exclusion_reason"] = f"TA data unavailable ({reason})"
+            add_event(
+                f"🚫 Pair Hunter excluding {key} for {cooldown_minutes}m "
+                f"(data failures: {fail_count}/{fail_threshold})"
+            )
+
+        pair_hunter_stats[key] = stats
+        _save_pair_hunter_stats_local()
+        await _upsert_pair_hunter_stat_to_db(key, stats)
+
+    async def _record_pair_hunter_data_success(asset: str):
+        """Clear temporary data-failure counters when symbol data is valid again."""
+        key = (asset or "").upper().strip()
+        if not key:
+            return
+        stats = pair_hunter_stats.get(key, {})
+        if int(stats.get("data_fail_count", 0) or 0) == 0 and not stats.get("excluded_until"):
+            return
+        stats["data_fail_count"] = 0
+        stats["excluded_until"] = None
+        stats["exclusion_reason"] = ""
+        stats["last_data_error"] = ""
+        stats["last_updated"] = datetime.now(timezone.utc).isoformat()
+        pair_hunter_stats[key] = stats
+        _save_pair_hunter_stats_local()
+        await _upsert_pair_hunter_stat_to_db(key, stats)
 
     def _rank_hunted_assets_by_performance(hunted_assets: list[str]) -> list[str]:
         """Re-rank/filter hunted assets using historical trade outcomes."""
@@ -428,7 +504,12 @@ def main():
 
         filtered_assets = []
         for asset in hunted_assets:
-            stats = pair_hunter_stats.get(asset, {})
+            key = (asset or "").upper().strip()
+            stats = pair_hunter_stats.get(key, {})
+            is_excluded, detail = _is_pair_temporarily_excluded(key)
+            if is_excluded:
+                add_event(f"🚫 Pair Hunter skipped excluded asset {key} ({detail})")
+                continue
             total_trades = int(stats.get("total_trades", 0) or 0)
             win_rate = float(stats.get("win_rate", 0.0) or 0.0)
             expectancy_usd = float(stats.get("expectancy_usd", 0.0) or 0.0)
@@ -439,11 +520,11 @@ def main():
             )
             if should_filter:
                 add_event(
-                    f"🚫 Pair Hunter filtered {asset} from hunt list "
+                    f"🚫 Pair Hunter filtered {key} from hunt list "
                     f"(trades={total_trades}, win_rate={win_rate:.1f}%, expectancy=${expectancy_usd:.2f})"
                 )
                 continue
-            filtered_assets.append(asset)
+            filtered_assets.append(key)
 
         def _rank_tuple(asset: str):
             stats = pair_hunter_stats.get(asset, {})
@@ -812,8 +893,10 @@ def main():
                             validated_hunts = []
                             for hunted_asset in hunted_assets:
                                 if _has_required_ta_data(hunted_asset):
+                                    await _record_pair_hunter_data_success(hunted_asset)
                                     validated_hunts.append(hunted_asset)
                                 else:
+                                    await _record_pair_hunter_data_failure(hunted_asset, "missing 5m/4h TA data")
                                     add_event(f"⚠️ Pair Hunter dropped {hunted_asset}: missing 5m/4h TA data on Binance")
                             hunted_assets = validated_hunts
                         run_loop._last_hunted_assets = hunted_assets
