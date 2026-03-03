@@ -7,6 +7,7 @@ sys.path.append(str(pathlib.Path(__file__).parent.parent))
 from src.strategies.strategy_factory import StrategyFactory
 from src.indicators.technical_analysis_client import TechnicalAnalysisClient
 from src.config_loader import CONFIG, get_leverage_for_asset
+from src.pair_hunter import PairHunter, get_best_pairs
 import asyncio
 import logging
 import time
@@ -868,7 +869,82 @@ def main():
                 except Exception:
                     return True
 
+            # ═════════════════════════════════════════════════════════════════
+            # 🔍 PAIR HUNTER: Dynamically discover best trading pairs
+            # ═════════════════════════════════════════════════════════════════
+            enable_pair_hunter = CONFIG.get("enable_pair_hunter", False)
+            pair_hunter_top_n = CONFIG.get("pair_hunter_top_n", 5)
+            pair_hunter_refresh_interval = CONFIG.get("pair_hunter_refresh_interval", 5)  # Refresh every N loops
+            
+            if enable_pair_hunter:
+                # Initialize pair hunter tracking
+                if not hasattr(run_loop, '_pair_hunter_counter'):
+                    run_loop._pair_hunter_counter = 0
+                    run_loop._last_hunted_assets = []
+                
+                run_loop._pair_hunter_counter += 1
+                
+                # Refresh hunted pairs every N iterations (or on first run)
+                should_refresh = (
+                    run_loop._pair_hunter_counter >= pair_hunter_refresh_interval 
+                    or len(run_loop._last_hunted_assets) == 0
+                )
+                
+                if should_refresh:
+                    try:
+                        add_event(f"🔍 PAIR HUNTER: Scanning for top {pair_hunter_top_n} opportunities...")
+                        
+                        # Get current positions (always include these)
+                        positions_assets = set()
+                        for pos in positions:
+                            asset = pos.get('symbol') or pos.get('coin')
+                            if asset:
+                                positions_assets.add(asset)
+                        
+                        # Hunt for new opportunities
+                        hunted_assets = await get_best_pairs(
+                            hyperliquid, 
+                            top_n=pair_hunter_top_n,
+                            min_volatility=2.0
+                        )
+                        
+                        # Merge: Positions + Fresh hunts (positions take priority)
+                        merged_assets = list(positions_assets) + [a for a in hunted_assets if a not in positions_assets]
+                        
+                        # Update tracking
+                        run_loop._last_hunted_assets = hunted_assets
+                        run_loop._pair_hunter_counter = 0
+                        
+                        if hunted_assets:
+                            add_event(f"🏆 PAIR HUNTER: Found {len(hunted_assets)} top setups: {', '.join(hunted_assets)}")
+                            if positions_assets:
+                                add_event(f"📊 Plus monitoring positions: {', '.join(positions_assets)}")
+                            
+                            # Replace args.assets with merged list for this decision
+                            decision_assets = merged_assets[:8]  # Max 8 assets to analyze
+                        else:
+                            decision_assets = args.assets  # Fallback to hardcoded
+                            
+                    except Exception as e:
+                        add_event(f"⚠️ Pair Hunter error: {e}. Using hardcoded assets.")
+                        decision_assets = args.assets
+                else:
+                    # Use previously hunted assets (with positions)
+                    positions_assets = set()
+                    for pos in positions:
+                        asset = pos.get('symbol') or pos.get('coin')
+                        if asset:
+                            positions_assets.add(asset)
+                    
+                    merged = list(positions_assets) + [a for a in run_loop._last_hunted_assets if a not in positions_assets]
+                    decision_assets = merged[:8]
+            else:
+                # Use hardcoded assets from .env
+                decision_assets = args.assets
+            
+            # ═════════════════════════════════════════════════════════════════
             # Track current strategy name for change detection (both AUTO and MANUAL)
+            # ═════════════════════════════════════════════════════════════════
             current_strategy_name = agent.get_name()
             if not hasattr(run_loop, '_last_strategy_name'):
                 run_loop._last_strategy_name = None
@@ -887,7 +963,7 @@ def main():
             run_loop._last_strategy_name = current_strategy_name
 
             try:
-                outputs = agent.decide_trade(args.assets, context)
+                outputs = agent.decide_trade(decision_assets, context)
                 if not isinstance(outputs, dict):
                     add_event(f"Invalid output format (expected dict): {outputs}")
                     outputs = {}
