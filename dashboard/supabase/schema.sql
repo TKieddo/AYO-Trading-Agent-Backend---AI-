@@ -97,6 +97,22 @@ CREATE TABLE IF NOT EXISTS decisions (
   timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Pair Hunter stats table (per-asset performance memory)
+CREATE TABLE IF NOT EXISTS pair_hunter_stats (
+  asset VARCHAR(16) PRIMARY KEY,
+  total_trades INTEGER NOT NULL DEFAULT 0,
+  wins INTEGER NOT NULL DEFAULT 0,
+  losses INTEGER NOT NULL DEFAULT 0,
+  win_rate DECIMAL(7, 3) NOT NULL DEFAULT 0,
+  total_pnl_usd DECIMAL(20, 8) NOT NULL DEFAULT 0,
+  total_pnl_percent DECIMAL(20, 8) NOT NULL DEFAULT 0,
+  expectancy_usd DECIMAL(20, 8) NOT NULL DEFAULT 0,
+  expectancy_percent DECIMAL(20, 8) NOT NULL DEFAULT 0,
+  last_close_reason TEXT,
+  last_updated TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_prices_symbol ON prices(symbol);
 CREATE INDEX IF NOT EXISTS idx_prices_timestamp ON prices(timestamp DESC);
@@ -111,6 +127,7 @@ CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON trading_logs(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_logs_level ON trading_logs(level);
 CREATE INDEX IF NOT EXISTS idx_decisions_timestamp ON decisions(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_decisions_asset ON decisions(asset);
+CREATE INDEX IF NOT EXISTS idx_pair_hunter_stats_updated_at ON pair_hunter_stats(updated_at DESC);
 
 -- Enable Row Level Security (optional, adjust as needed)
 ALTER TABLE prices ENABLE ROW LEVEL SECURITY;
@@ -120,6 +137,7 @@ ALTER TABLE trades ENABLE ROW LEVEL SECURITY;
 ALTER TABLE account_metrics ENABLE ROW LEVEL SECURITY;
 ALTER TABLE trading_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE decisions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE pair_hunter_stats ENABLE ROW LEVEL SECURITY;
 
 -- Policy: Allow all reads (adjust for security as needed)
 CREATE POLICY "Allow public read access" ON prices FOR SELECT USING (true);
@@ -129,6 +147,7 @@ CREATE POLICY "Allow public read access" ON trades FOR SELECT USING (true);
 CREATE POLICY "Allow public read access" ON account_metrics FOR SELECT USING (true);
 CREATE POLICY "Allow public read access" ON trading_logs FOR SELECT USING (true);
 CREATE POLICY "Allow public read access" ON decisions FOR SELECT USING (true);
+CREATE POLICY "Allow public read access" ON pair_hunter_stats FOR SELECT USING (true);
 
 -- Real-time subscriptions (enabled by default in Supabase)
 -- Prices table will broadcast changes automatically

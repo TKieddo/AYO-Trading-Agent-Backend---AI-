@@ -299,8 +299,8 @@ def main():
         logging.info(msg)
         recent_events.append({"timestamp": datetime.now(timezone.utc).isoformat(), "message": msg})
 
-    def _load_pair_hunter_stats():
-        """Load persisted pair-hunter performance stats."""
+    def _load_pair_hunter_stats_local():
+        """Load local fallback pair-hunter performance stats."""
         nonlocal pair_hunter_stats
         try:
             if os.path.exists(pair_hunter_stats_path):
@@ -313,15 +313,67 @@ def main():
             logging.warning(f"Could not load pair_hunter_stats.json: {e}")
             pair_hunter_stats = {}
 
-    def _save_pair_hunter_stats():
-        """Persist pair-hunter performance stats."""
+    def _save_pair_hunter_stats_local():
+        """Persist local fallback pair-hunter performance stats."""
         try:
             with open(pair_hunter_stats_path, "w", encoding="utf-8") as f:
                 json.dump(pair_hunter_stats, f, default=json_default)
         except Exception as e:
             logging.warning(f"Could not save pair_hunter_stats.json: {e}")
 
-    def _record_pair_hunter_outcome(asset: str, pnl_usd: float, pnl_percent: float, close_reason: str):
+    def _get_dashboard_api_url() -> str:
+        return (
+            os.getenv("NEXT_PUBLIC_API_URL")
+            or os.getenv("NEXT_PUBLIC_BASE_URL")
+            or os.getenv("DASHBOARD_URL")
+            or CONFIG.get("NEXT_PUBLIC_API_URL")
+            or CONFIG.get("next_public_base_url")
+            or "http://localhost:3001"
+        )
+
+    async def _load_pair_hunter_stats():
+        """Load pair-hunter performance stats from dashboard DB API (fallback to local file)."""
+        nonlocal pair_hunter_stats
+        api_url = _get_dashboard_api_url()
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{api_url}/api/pair-hunter/stats",
+                    timeout=aiohttp.ClientTimeout(total=8)
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if isinstance(data, dict) and isinstance(data.get("stats"), dict):
+                            pair_hunter_stats = data["stats"]
+                            add_event(f"📚 Loaded Pair Hunter stats from DB for {len(pair_hunter_stats)} assets")
+                            _save_pair_hunter_stats_local()
+                            return
+                    logging.warning(f"Pair Hunter DB stats fetch returned status {resp.status}, using local fallback")
+        except Exception as e:
+            logging.warning(f"Could not load Pair Hunter stats from DB API: {e}")
+        _load_pair_hunter_stats_local()
+
+    async def _upsert_pair_hunter_stat_to_db(asset: str, stat_row: dict):
+        """Persist a single pair stat to dashboard DB API."""
+        api_url = _get_dashboard_api_url()
+        payload = {
+            "asset": asset,
+            "stats": stat_row
+        }
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{api_url}/api/pair-hunter/stats",
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=8)
+                ) as resp:
+                    if resp.status not in (200, 201):
+                        body = await resp.text()
+                        logging.warning(f"Pair Hunter DB upsert failed ({resp.status}): {body[:200]}")
+        except Exception as e:
+            logging.warning(f"Could not upsert Pair Hunter stat to DB API: {e}")
+
+    async def _record_pair_hunter_outcome(asset: str, pnl_usd: float, pnl_percent: float, close_reason: str):
         """Update win/loss + expectancy metrics for a closed trade asset."""
         key = (asset or "").upper().strip()
         if not key:
@@ -357,7 +409,8 @@ def main():
             "last_close_reason": close_reason,
             "last_updated": datetime.now(timezone.utc).isoformat()
         }
-        _save_pair_hunter_stats()
+        _save_pair_hunter_stats_local()
+        await _upsert_pair_hunter_stat_to_db(key, pair_hunter_stats[key])
         add_event(
             f"📊 Pair Hunter stats {key}: trades={total_trades}, win_rate={win_rate:.1f}%, "
             f"expectancy=${expectancy_usd:.2f}/trade"
@@ -403,8 +456,6 @@ def main():
 
         ranked = sorted(filtered_assets, key=_rank_tuple, reverse=True)
         return ranked
-
-    _load_pair_hunter_stats()
 
     # Initialize webhook notifier for external alerts (WhatsApp, Discord, etc.)
     webhook_url = CONFIG.get("webhook_url")
@@ -475,8 +526,12 @@ def main():
         # Position cache for PnL tracking (updated every 2-20 seconds)
         position_cache = {}  # asset -> {pnl_usd, pnl_percent, timestamp, entry_price, initial_margin}
         last_cache_update = {}  # asset -> timestamp
+        pair_hunter_stats_loaded = False
         
         while True:
+            if not pair_hunter_stats_loaded:
+                await _load_pair_hunter_stats()
+                pair_hunter_stats_loaded = True
             invocation_count += 1
             minutes_since_start = (datetime.now(timezone.utc) - start_time).total_seconds() / 60
 
@@ -955,7 +1010,7 @@ def main():
                             "pnl": pnl_usd,
                             "pnl_percent": pnl_percent
                         }) + "\n")
-                    _record_pair_hunter_outcome(asset, pnl_usd, pnl_percent, "close_stop_loss")
+                    await _record_pair_hunter_outcome(asset, pnl_usd, pnl_percent, "close_stop_loss")
                     
                     # Remove from positions list so AI doesn't see it
                     positions = [p for p in positions if p.get('symbol') != asset]
@@ -1416,7 +1471,7 @@ def main():
                                         "reason": f"Maximum hold time reached ({hours_open:.1f}h)",
                                         "pnl": unrealized_pnl
                                     }) + "\n")
-                                _record_pair_hunter_outcome(asset, unrealized_pnl, pnl_percent, "close_max_hold_time")
+                                await _record_pair_hunter_outcome(asset, unrealized_pnl, pnl_percent, "close_max_hold_time")
                             except Exception as e:
                                 add_event(f"❌ Failed to close {asset} position (max hold time): {e}")
                             continue  # Skip to next position
@@ -1725,7 +1780,7 @@ def main():
                                 "pnl": (current_price - float(entry_price or current_price)) * position_size if is_long else (float(entry_price or current_price) - current_price) * position_size
                             }) + "\n")
                         realized_pnl = (current_price - float(entry_price or current_price)) * position_size if is_long else (float(entry_price or current_price) - current_price) * position_size
-                        _record_pair_hunter_outcome(asset, realized_pnl, pnl_percent, f"close_{reason.lower()}")
+                        await _record_pair_hunter_outcome(asset, realized_pnl, pnl_percent, f"close_{reason.lower()}")
                     except Exception as e:
                         add_event(f"❌ Failed to close {asset} position: {e}")
                         import traceback
