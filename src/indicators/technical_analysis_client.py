@@ -14,8 +14,12 @@ class TechnicalAnalysisClient:
 
     def __init__(self):
         """Initialize Binance client (no API key needed for public market data)."""
-        self.binance_base_url = "https://api.binance.com/api/v3"
+        self.binance_spot_base_url = "https://api.binance.com/api/v3"
+        self.binance_futures_base_url = "https://fapi.binance.com/fapi/v1"
         self.logger = logging.getLogger(__name__)
+        # Cache symbols/intervals that recently returned 400 to prevent log spam
+        self._invalid_symbol_cache: Dict[str, float] = {}
+        self._invalid_symbol_ttl_seconds = 900
 
     def _get_with_retry(self, url: str, params: dict, retries: int = 3, backoff: float = 0.5):
         """Perform a GET request with exponential backoff retry logic."""
@@ -55,32 +59,50 @@ class TechnicalAnalysisClient:
             # Convert symbol format (BTC/USDT -> BTCUSDT)
             binance_symbol = symbol.replace("/", "").upper()
             binance_interval = self._interval_to_binance(interval)
+            cache_key = f"{binance_symbol}:{binance_interval}"
+            now_ts = time.time()
+            invalid_until = self._invalid_symbol_cache.get(cache_key, 0)
+            if invalid_until > now_ts:
+                return pd.DataFrame()
             
-            url = f"{self.binance_base_url}/klines"
             params = {
                 "symbol": binance_symbol,
                 "interval": binance_interval,
                 "limit": min(limit, 1000)  # Binance max is 1000
             }
-            
-            data = self._get_with_retry(url, params)
-            
-            # Convert to DataFrame
-            df = pd.DataFrame(data, columns=[
-                "timestamp", "open", "high", "low", "close", "volume",
-                "close_time", "quote_volume", "trades", "taker_buy_base",
-                "taker_buy_quote", "ignore"
-            ])
-            
-            # Convert to numeric and proper types
-            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
-            for col in ["open", "high", "low", "close", "volume"]:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-            
-            df = df[["timestamp", "open", "high", "low", "close", "volume"]].copy()
-            df.set_index("timestamp", inplace=True)
-            
-            return df
+
+            # Try futures first (trading is futures-focused), then spot as fallback.
+            for base_url in (self.binance_futures_base_url, self.binance_spot_base_url):
+                try:
+                    url = f"{base_url}/klines"
+                    data = self._get_with_retry(url, params)
+                    if not data:
+                        continue
+
+                    df = pd.DataFrame(data, columns=[
+                        "timestamp", "open", "high", "low", "close", "volume",
+                        "close_time", "quote_volume", "trades", "taker_buy_base",
+                        "taker_buy_quote", "ignore"
+                    ])
+
+                    # Convert to numeric and proper types
+                    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+                    for col in ["open", "high", "low", "close", "volume"]:
+                        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+                    df = df[["timestamp", "open", "high", "low", "close", "volume"]].copy()
+                    df.set_index("timestamp", inplace=True)
+                    return df
+                except requests.HTTPError as e:
+                    # 400 usually means symbol/interval not available on this endpoint.
+                    if e.response is not None and e.response.status_code == 400:
+                        continue
+                    raise
+
+            # Both futures and spot failed with 400/no data: cache temporarily
+            self._invalid_symbol_cache[cache_key] = now_ts + self._invalid_symbol_ttl_seconds
+            self.logger.warning(f"Unsupported/insufficient Binance market data for {symbol} {interval}; temporarily suppressing retries")
+            return pd.DataFrame()
         except Exception as e:
             self.logger.error(f"Error fetching klines for {symbol} {interval}: {e}")
             return pd.DataFrame()

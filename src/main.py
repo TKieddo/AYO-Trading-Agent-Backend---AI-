@@ -531,6 +531,29 @@ def main():
         
         return f"{base_note}{margin_instruction}"
 
+    def _has_required_ta_data(asset: str) -> bool:
+        """Validate that key TA inputs exist before adding hunted asset to decision universe."""
+        try:
+            intraday_probe = taapi.fetch_series(
+                "ema",
+                f"{asset}/USDT",
+                "5m",
+                results=1,
+                params={"period": 20},
+                value_key="value",
+            )
+            longterm_probe = taapi.fetch_series(
+                "ema",
+                f"{asset}/USDT",
+                "4h",
+                results=1,
+                params={"period": 20},
+                value_key="value",
+            )
+            return bool(intraday_probe) and bool(longterm_probe)
+        except Exception:
+            return False
+
     async def run_loop():
         """Main trading loop that gathers data, calls the agent, and executes trades."""
         nonlocal invocation_count, initial_account_value
@@ -786,6 +809,13 @@ def main():
                             hunted_assets = []
                         if hunted_assets:
                             hunted_assets = _rank_hunted_assets_by_performance(hunted_assets)
+                            validated_hunts = []
+                            for hunted_asset in hunted_assets:
+                                if _has_required_ta_data(hunted_asset):
+                                    validated_hunts.append(hunted_asset)
+                                else:
+                                    add_event(f"⚠️ Pair Hunter dropped {hunted_asset}: missing 5m/4h TA data on Binance")
+                            hunted_assets = validated_hunts
                         run_loop._last_hunted_assets = hunted_assets
                         run_loop._pair_hunter_counter = 0
                     except Exception as e:
