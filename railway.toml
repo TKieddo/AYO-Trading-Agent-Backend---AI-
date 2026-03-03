@@ -2,6 +2,6 @@
 builder = "nixpacks"
 
 [deploy]
-startCommand = "npm start"
+startCommand = "poetry run python src/main.py"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 5
