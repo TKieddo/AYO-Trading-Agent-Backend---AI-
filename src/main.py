@@ -301,6 +301,12 @@ def main():
     webhook_url = CONFIG.get("webhook_url")
     enable_webhook = CONFIG.get("enable_webhook_notifications", False)
     webhook_notifier = WebhookNotifier(webhook_url if enable_webhook else None)
+    if enable_webhook and webhook_url:
+        add_event("🔔 Notifications enabled: trade events will be sent to configured webhook/Telegram bridge.")
+    elif enable_webhook and not webhook_url:
+        add_event("⚠️ Notifications enabled but WEBHOOK_URL is missing. Alerts will NOT be delivered.")
+    else:
+        add_event("🔕 Notifications disabled (ENABLE_WEBHOOK_NOTIFICATIONS=false).")
 
     def _build_position_sizing_note(trading_settings: dict, default_leverage: int, per_asset_leverage: dict = None) -> str:
         """Build position sizing note for LLM context - ALWAYS uses margin mode."""
@@ -560,6 +566,73 @@ def main():
                 
                 enhanced_active_trades.append(enhanced_tr)
 
+            # ═════════════════════════════════════════════════════════════════
+            # 🔍 PAIR HUNTER: Build decision universe before market-data fetch
+            # ═════════════════════════════════════════════════════════════════
+            decision_assets = list(args.assets)
+            enable_pair_hunter = CONFIG.get("enable_pair_hunter", False)
+            pair_hunter_top_n = CONFIG.get("pair_hunter_top_n", 5)
+            pair_hunter_refresh_interval = CONFIG.get("pair_hunter_refresh_interval", 5)  # Refresh every N loops
+            pair_hunter_min_volatility = CONFIG.get("pair_hunter_min_volatility", 2.0)
+            pair_hunter_max_analyze_assets = CONFIG.get("pair_hunter_max_analyze_assets", 8)
+
+            if enable_pair_hunter:
+                # Initialize pair hunter tracking
+                if not hasattr(run_loop, '_pair_hunter_counter'):
+                    run_loop._pair_hunter_counter = 0
+                    run_loop._last_hunted_assets = []
+
+                run_loop._pair_hunter_counter += 1
+
+                # Refresh hunted pairs every N iterations (or on first run)
+                should_refresh = (
+                    run_loop._pair_hunter_counter >= pair_hunter_refresh_interval
+                    or len(run_loop._last_hunted_assets) == 0
+                )
+
+                # Get current positions (always include these)
+                positions_assets = set()
+                for pos in positions:
+                    asset = pos.get('symbol') or pos.get('coin')
+                    if asset:
+                        positions_assets.add(asset)
+
+                if should_refresh:
+                    try:
+                        add_event(f"🔍 PAIR HUNTER: Scanning for top {pair_hunter_top_n} opportunities...")
+                        hunted_assets = await get_best_pairs(
+                            hyperliquid,
+                            top_n=pair_hunter_top_n,
+                            min_volatility=pair_hunter_min_volatility
+                        )
+                        if not hunted_assets or not isinstance(hunted_assets, list):
+                            logger.warning(f"Pair Hunter returned invalid result: {hunted_assets}. Using fallback.")
+                            hunted_assets = []
+                        run_loop._last_hunted_assets = hunted_assets
+                        run_loop._pair_hunter_counter = 0
+                    except Exception as e:
+                        add_event(f"⚠️ Pair Hunter error: {e}. Using cached/fallback assets.")
+                        hunted_assets = []
+                else:
+                    hunted_assets = list(run_loop._last_hunted_assets)
+
+                if hunted_assets:
+                    merged_assets = list(positions_assets) + [a for a in hunted_assets if a not in positions_assets]
+                    decision_assets = merged_assets[:pair_hunter_max_analyze_assets]
+                    add_event(f"🏆 PAIR HUNTER: top setups ({len(hunted_assets)}): {', '.join(hunted_assets)}")
+                    if positions_assets:
+                        add_event(f"📊 Monitoring open-position assets: {', '.join(positions_assets)}")
+                    try:
+                        await webhook_notifier.notify_pair_hunter(
+                            top_pairs=hunted_assets,
+                            positions=list(positions_assets)
+                        )
+                    except Exception as e:
+                        logging.debug(f"Webhook pair hunter notification failed: {e}")
+                else:
+                    decision_assets = list(args.assets)
+                    add_event("⚠️ Pair Hunter yielded no symbols, using ASSETS fallback.")
+
             dashboard = {
                 "total_return_pct": round(total_return_pct, 2),
                 "balance": round_or_none(state['balance'], 2),
@@ -572,14 +645,14 @@ def main():
                 "recent_fills": recent_fills_struct,
                 "position_summary": {
                     "assets_with_positions": list(assets_with_positions) if 'assets_with_positions' in locals() else [],
-                    "assets_without_positions": [a for a in args.assets if a not in (assets_with_positions if 'assets_with_positions' in locals() else set())]
+                    "assets_without_positions": [a for a in decision_assets if a not in (assets_with_positions if 'assets_with_positions' in locals() else set())]
                 }
             }
 
             # Gather data for ALL assets first
             market_sections = []
             asset_prices = {}
-            for asset in args.assets:
+            for asset in decision_assets:
                 try:
                     current_price = await hyperliquid.get_current_price(asset)
                     asset_prices[asset] = current_price
@@ -643,7 +716,7 @@ def main():
                 if pos.get('symbol') and abs(float(pos.get('quantity', 0))) > 0:
                     assets_with_positions_set.add(pos.get('symbol'))
             
-            flat_assets = [a for a in args.assets if a not in assets_with_positions_set]
+            flat_assets = [a for a in decision_assets if a not in assets_with_positions_set]
 
             # Fetch trading settings (leverage, TP%, SL%, position sizing)
             # This will use database settings first, then fall back to .env file if database unavailable
@@ -772,7 +845,7 @@ def main():
 
             # Build per-asset leverage map for context and enforcement
             per_asset_leverage = {}
-            for asset in args.assets:
+            for asset in decision_assets:
                 asset_leverage = get_leverage_for_asset(asset, default_leverage)
                 per_asset_leverage[asset] = asset_leverage
                 if asset_leverage != default_leverage:
@@ -833,7 +906,7 @@ def main():
                     "note": "Each position includes PnL in USD and percentage with sign indicators. Use cached_pnl if current data is unavailable."
                 }),
                 ("instructions", {
-                    "assets": args.assets,
+                    "assets": decision_assets,
                     "requirement": "Decide actions for all assets and return a strict JSON array matching the schema.",
                     "priority": f"PRIORITIZE finding entries for flat assets: {flat_assets}. These have no positions - actively scan for trading opportunities.",
                     "tp_sl_guidance": f"Calculate TP/SL prices using configured percentages: TP={tp_percent}%, SL={sl_percent}%. If not provided, system will calculate automatically."
@@ -854,7 +927,7 @@ def main():
                 logging.info("📤 No open positions - passing empty positions_data to AI agent")
             
             context = json.dumps(context_payload, default=json_default)
-            add_event(f"Combined prompt length: {len(context)} chars for {len(args.assets)} assets")
+            add_event(f"Combined prompt length: {len(context)} chars for {len(decision_assets)} assets")
             with open("prompts.log", "a") as f:
                 f.write(f"\n\n--- {datetime.now()} - ALL ASSETS ---\n{json.dumps(context_payload, indent=2, default=json_default)}\n")
 
@@ -928,96 +1001,11 @@ def main():
                 
                 run_loop._position_update_counter = 0  # Reset counter
             
-            # ═════════════════════════════════════════════════════════════════
-            # 🔍 PAIR HUNTER: Dynamically discover best trading pairs
-            # ═════════════════════════════════════════════════════════════════
-            enable_pair_hunter = CONFIG.get("enable_pair_hunter", False)
-            pair_hunter_top_n = CONFIG.get("pair_hunter_top_n", 5)
-            pair_hunter_refresh_interval = CONFIG.get("pair_hunter_refresh_interval", 5)  # Refresh every N loops
-            
+            # Visibility: print the active analysis universe every cycle
             if enable_pair_hunter:
-                # Initialize pair hunter tracking
-                if not hasattr(run_loop, '_pair_hunter_counter'):
-                    run_loop._pair_hunter_counter = 0
-                    run_loop._last_hunted_assets = []
-                
-                run_loop._pair_hunter_counter += 1
-                
-                # Refresh hunted pairs every N iterations (or on first run)
-                should_refresh = (
-                    run_loop._pair_hunter_counter >= pair_hunter_refresh_interval 
-                    or len(run_loop._last_hunted_assets) == 0
-                )
-                
-                if should_refresh:
-                    try:
-                        add_event(f"🔍 PAIR HUNTER: Scanning for top {pair_hunter_top_n} opportunities...")
-                        
-                        # Get current positions (always include these)
-                        positions_assets = set()
-                        for pos in positions:
-                            asset = pos.get('symbol') or pos.get('coin')
-                            if asset:
-                                positions_assets.add(asset)
-                        
-                        # Hunt for new opportunities
-                        try:
-                            hunted_assets = await get_best_pairs(
-                                hyperliquid, 
-                                top_n=pair_hunter_top_n,
-                                min_volatility=2.0
-                            )
-                        except Exception as hunt_error:
-                            logger.warning(f"Pair Hunter failed: {hunt_error}. Using fallback.")
-                            hunted_assets = []  # Empty list triggers fallback
-                        
-                        # Validate result
-                        if not hunted_assets or not isinstance(hunted_assets, list):
-                            logger.warning(f"Pair Hunter returned invalid result: {hunted_assets}. Using fallback.")
-                            hunted_assets = []
-                        
-                        # Merge: Positions + Fresh hunts (positions take priority)
-                        merged_assets = list(positions_assets) + [a for a in hunted_assets if a not in positions_assets]
-                        
-                        # Update tracking
-                        run_loop._last_hunted_assets = hunted_assets
-                        run_loop._pair_hunter_counter = 0
-                        
-                        if hunted_assets:
-                            add_event(f"🏆 PAIR HUNTER: Found {len(hunted_assets)} top setups: {', '.join(hunted_assets)}")
-                            if positions_assets:
-                                add_event(f"📊 Plus monitoring positions: {', '.join(positions_assets)}")
-                            
-                            # Send webhook notification for pair hunter
-                            try:
-                                await webhook_notifier.notify_pair_hunter(
-                                    top_pairs=hunted_assets,
-                                    positions=list(positions_assets)
-                                )
-                            except Exception as e:
-                                logging.debug(f"Webhook pair hunter notification failed: {e}")
-                            
-                            # Replace args.assets with merged list for this decision
-                            decision_assets = merged_assets[:8]  # Max 8 assets to analyze
-                        else:
-                            decision_assets = args.assets  # Fallback to hardcoded
-                            
-                    except Exception as e:
-                        add_event(f"⚠️ Pair Hunter error: {e}. Using hardcoded assets.")
-                        decision_assets = args.assets
-                else:
-                    # Use previously hunted assets (with positions)
-                    positions_assets = set()
-                    for pos in positions:
-                        asset = pos.get('symbol') or pos.get('coin')
-                        if asset:
-                            positions_assets.add(asset)
-                    
-                    merged = list(positions_assets) + [a for a in run_loop._last_hunted_assets if a not in positions_assets]
-                    decision_assets = merged[:8]
-            else:
-                # Use hardcoded assets from .env
-                decision_assets = args.assets
+                hunted_snapshot = list(getattr(run_loop, "_last_hunted_assets", []))
+                add_event(f"🔎 Pair Hunter cached symbols ({len(hunted_snapshot)}): {', '.join(hunted_snapshot) if hunted_snapshot else 'none'}")
+            add_event(f"🧠 LLM analyzing {len(decision_assets)} assets this cycle: {', '.join(decision_assets)}")
             
             # ═════════════════════════════════════════════════════════════════
             # Track current strategy name for change detection (both AUTO and MANUAL)
@@ -1059,7 +1047,7 @@ def main():
                 ])
                 context_retry = json.dumps(context_retry_payload, default=json_default)
                 try:
-                    outputs = agent.decide_trade(args.assets, context_retry)
+                    outputs = agent.decide_trade(decision_assets, context_retry)
                     if not isinstance(outputs, dict):
                         add_event(f"Retry invalid format: {outputs}")
                         outputs = {}
@@ -1072,6 +1060,22 @@ def main():
             reasoning_text = outputs.get("reasoning", "") if isinstance(outputs, dict) else ""
             if reasoning_text:
                 add_event(f"LLM reasoning summary: {reasoning_text}")
+            if isinstance(outputs, dict):
+                try:
+                    decisions = outputs.get("trade_decisions", [])
+                    action_counts = {}
+                    for d in decisions if isinstance(decisions, list) else []:
+                        action = (d.get("action") if isinstance(d, dict) else None) or "unknown"
+                        action_counts[action] = action_counts.get(action, 0) + 1
+                    add_event(f"🧾 LLM decision summary: {action_counts} across {len(decision_assets)} analyzed assets")
+                    await webhook_notifier.send_notification("DECISION_SUMMARY", {
+                        "analyzed_assets": decision_assets,
+                        "decision_count": len(decisions) if isinstance(decisions, list) else 0,
+                        "action_counts": action_counts,
+                        "timestamp": str(datetime.now(timezone.utc))
+                    })
+                except Exception as e:
+                    logging.debug(f"Decision summary notification failed: {e}")
 
             # Check if strategy changed (for auto mode) and adjust existing positions accordingly
             if strategy_mode == "AUTO" and hasattr(run_loop, '_last_strategy_name') and run_loop._last_strategy_name:
@@ -1300,18 +1304,32 @@ def main():
                 # 2. DRAWDOWN PROTECTION: Close if profit drops significantly from peak
                 enable_drawdown = CONFIG.get('enable_drawdown_protection', True)
                 max_drawdown_pct = CONFIG.get('max_drawdown_from_peak_pct', 5.0)
+                drawdown_min_peak_profit_pct = CONFIG.get('drawdown_min_peak_profit_pct', 3.0)
+                drawdown_confirm_cycles = max(1, int(CONFIG.get('drawdown_confirm_cycles', 2) or 2))
                 drawdown_should_close = False
                 drawdown_reason = ""
-                if enable_drawdown and peak_profit_pct is not None and peak_profit_pct > 0:
+                if enable_drawdown and peak_profit_pct is not None and peak_profit_pct >= drawdown_min_peak_profit_pct:
                     drawdown_from_peak = peak_profit_pct - pnl_percent
                     if drawdown_from_peak >= max_drawdown_pct:
-                        add_event(f"📉 Drawdown protection triggered for {asset}: Peak was {peak_profit_pct:.1f}%, now {pnl_percent:.1f}% (drawdown: {drawdown_from_peak:.1f}%). Closing to protect gains.")
-                        drawdown_should_close = True
-                        drawdown_reason = f"Drawdown protection ({drawdown_from_peak:.1f}% from peak)"
-                        # Will close below
+                        drawdown_trigger_count = 1
+                        if active_trade_record is not None:
+                            drawdown_trigger_count = int(active_trade_record.get("drawdown_trigger_count", 0) or 0) + 1
+                            active_trade_record["drawdown_trigger_count"] = drawdown_trigger_count
+                        if drawdown_trigger_count >= drawdown_confirm_cycles:
+                            add_event(f"📉 Drawdown protection triggered for {asset}: Peak was {peak_profit_pct:.1f}%, now {pnl_percent:.1f}% (drawdown: {drawdown_from_peak:.1f}%). Closing to protect gains.")
+                            drawdown_should_close = True
+                            drawdown_reason = f"Drawdown protection ({drawdown_from_peak:.1f}% from peak)"
+                        else:
+                            add_event(f"📉 Drawdown warning for {asset}: {drawdown_from_peak:.1f}% from peak (confirm {drawdown_trigger_count}/{drawdown_confirm_cycles})")
+                    elif active_trade_record is not None:
+                        active_trade_record["drawdown_trigger_count"] = 0
+                elif active_trade_record is not None:
+                    active_trade_record["drawdown_trigger_count"] = 0
                 
                 # 2b. LOSS PROTECTION: Close if position is down significantly (backup if AI doesn't close)
                 loss_protection_pct = CONFIG.get('loss_protection_pct', 5.0)  # Close if down 5%+
+                loss_protection_min_hours = CONFIG.get('loss_protection_min_hours', 1.0)
+                loss_protection_confirm_cycles = max(1, int(CONFIG.get('loss_protection_confirm_cycles', 2) or 2))
                 if pnl_percent <= -loss_protection_pct:
                     # Check how long it's been losing
                     if opened_at_str:
@@ -1325,13 +1343,22 @@ def main():
                                 opened_at = opened_at.replace(tzinfo=timezone.utc)
                             hours_open = (datetime.now(timezone.utc) - opened_at).total_seconds() / 3600
                             
-                            # Only auto-close if it's been losing for a while (at least 1 hour) to give it time to recover
-                            if hours_open >= 1.0:
-                                add_event(f"⚠️  Loss protection triggered for {asset}: Down {abs(pnl_percent):.1f}% after {hours_open:.1f} hours. System closing as backup (AI should have closed earlier).")
-                                drawdown_should_close = True
-                                drawdown_reason = f"Loss protection (down {abs(pnl_percent):.1f}% after {hours_open:.1f}h)"
+                            # Only auto-close if loss persists for configured time and confirmation cycles
+                            if hours_open >= loss_protection_min_hours:
+                                loss_trigger_count = 1
+                                if active_trade_record is not None:
+                                    loss_trigger_count = int(active_trade_record.get("loss_trigger_count", 0) or 0) + 1
+                                    active_trade_record["loss_trigger_count"] = loss_trigger_count
+                                if loss_trigger_count >= loss_protection_confirm_cycles:
+                                    add_event(f"⚠️  Loss protection triggered for {asset}: Down {abs(pnl_percent):.1f}% after {hours_open:.1f} hours. System closing as backup.")
+                                    drawdown_should_close = True
+                                    drawdown_reason = f"Loss protection (down {abs(pnl_percent):.1f}% after {hours_open:.1f}h)"
+                                else:
+                                    add_event(f"⚠️  Loss warning for {asset}: Down {abs(pnl_percent):.1f}% (confirm {loss_trigger_count}/{loss_protection_confirm_cycles})")
                         except Exception as e:
                             logging.warning(f"Could not parse opened_at for {asset} loss protection: {e}")
+                elif active_trade_record is not None:
+                    active_trade_record["loss_trigger_count"] = 0
                 
                 # 3. TRAILING STOP LOSS: Move SL up as profit increases
                 enable_trailing = CONFIG.get('enable_trailing_stop', True)
@@ -1590,7 +1617,7 @@ def main():
             for output in outputs.get("trade_decisions", []) if isinstance(outputs, dict) else []:
                 try:
                     asset = output.get("asset")
-                    if not asset or asset not in args.assets:
+                    if not asset or asset not in decision_assets:
                         continue
                     action = output.get("action")
                     current_price = asset_prices.get(asset, 0)
@@ -3146,7 +3173,7 @@ def main():
                 
                 try:
                     # Place stop loss order (if enabled)
-                    if trading_settings.get('enable_stop_loss_orders', True):
+                    if CONFIG.get('enable_stop_loss_orders', True):
                         sl_result = await hyperliquid.place_stop_loss(asset, is_buy, position_size, sl_price)
                     else:
                         sl_result = {"disabled": True}

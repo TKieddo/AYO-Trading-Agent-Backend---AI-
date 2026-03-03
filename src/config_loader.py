@@ -113,10 +113,6 @@ CONFIG = {
     "smart_profit_tier2_pct": _get_int("SMART_PROFIT_TIER2_PCT", 12),  # Close 20% at 12%
     "smart_profit_tier2_size": _get_int("SMART_PROFIT_TIER2_SIZE", 20),
     "runner_trail_pct": _get_int("RUNNER_TRAIL_PCT", 2),  # Trail last 10% at 2%
-    # Time-based exits
-    "max_position_hold_hours": _get_float("MAX_POSITION_HOLD_HOURS", 0.5),  # 30 min max for scalping
-    "enable_drawdown_protection": _get_bool("ENABLE_DRAWDOWN_PROTECTION", True),
-    "max_drawdown_from_peak_pct": _get_int("MAX_DRAWDOWN_FROM_PEAK_PCT", 3),  # Close if drops 3% from peak profit
     # Position sizing (fallback when database unavailable)
     "target_profit_per_1pct_move": _get_float("TARGET_PROFIT_PER_1PCT_MOVE", 1.0),  # Target profit per 1% price move (e.g., 1.0 = $1 per 1%, 3.0 = $3 per 1%)
     "allocation_per_position": _get_float("ALLOCATION_PER_POSITION"),  # Fixed allocation per position (None = auto)
@@ -151,11 +147,16 @@ CONFIG = {
     "enable_drawdown_protection": _get_bool("ENABLE_DRAWDOWN_PROTECTION", True),  # Enable drawdown protection
     "max_drawdown_from_peak_pct": _get_float("MAX_DRAWDOWN_FROM_PEAK_PCT", 5.0),  # Close if profit drops X% from peak
     "loss_protection_pct": _get_float("LOSS_PROTECTION_PCT", 5.0),  # Close if position is down X% (backup protection)
-    # Pair Hunter - Dynamic pair discovery (replaces hardcoded ASSETS)
+    "drawdown_min_peak_profit_pct": _get_float("DRAWDOWN_MIN_PEAK_PROFIT_PCT", 3.0),  # Apply drawdown protection only after peak profit reaches this %
+    "drawdown_confirm_cycles": _get_int("DRAWDOWN_CONFIRM_CYCLES", 2),  # Require N consecutive drawdown checks before closing
+    "loss_protection_min_hours": _get_float("LOSS_PROTECTION_MIN_HOURS", 1.0),  # Minimum hours open before loss-protection can close
+    "loss_protection_confirm_cycles": _get_int("LOSS_PROTECTION_CONFIRM_CYCLES", 2),  # Require N consecutive loss checks before closing
+    # Pair Hunter - Dynamic pair discovery (ASSETS remains fallback if hunter fails)
     "enable_pair_hunter": _get_bool("ENABLE_PAIR_HUNTER", False),  # Enable automatic pair discovery
     "pair_hunter_top_n": _get_int("PAIR_HUNTER_TOP_N", 5),  # Number of top pairs to hunt
     "pair_hunter_refresh_interval": _get_int("PAIR_HUNTER_REFRESH_INTERVAL", 5),  # Refresh hunt every N loops
     "pair_hunter_min_volatility": _get_float("PAIR_HUNTER_MIN_VOLATILITY", 2.0),  # Minimum 24h volatility %
+    "pair_hunter_max_analyze_assets": _get_int("PAIR_HUNTER_MAX_ANALYZE_ASSETS", 8),  # Cap on assets passed to LLM per cycle
     # Webhook notifications (WhatsApp, Discord, etc.)
     "webhook_url": _get_env("WEBHOOK_URL"),  # URL to POST trade notifications (e.g., Telegram bot, Discord webhook)
     "enable_webhook_notifications": _get_bool("ENABLE_WEBHOOK_NOTIFICATIONS", False),  # Enable webhook alerts

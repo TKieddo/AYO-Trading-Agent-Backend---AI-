@@ -30,6 +30,11 @@ PAIR_HUNTER_MIN_VOLATILITY=2.0
 ASSETS=BTC ETH SOL  # Fallback if Pair Hunter fails
 ```
 
+Optional cap for how many symbols are sent to LLM per cycle:
+```
+PAIR_HUNTER_MAX_ANALYZE_ASSETS=8
+```
+
 ### Step 3: Redeploy
 
 ```bash
@@ -47,6 +52,7 @@ npx @railway/cli up
 | `PAIR_HUNTER_TOP_N` | `5` | Number of top pairs to analyze |
 | `PAIR_HUNTER_REFRESH_INTERVAL` | `5` | Refresh hunt every N cycles (5 cycles × 5 min = 25 min) |
 | `PAIR_HUNTER_MIN_VOLATILITY` | `2.0` | Minimum 24h volatility % to consider |
+| `PAIR_HUNTER_MAX_ANALYZE_ASSETS` | `8` | Max assets passed to LLM per cycle (positions + hunted pairs) |
 
 ---
 
