@@ -876,6 +876,59 @@ def main():
                     return True
 
             # ═════════════════════════════════════════════════════════════════
+            # 📊 PERIODIC POSITION UPDATES: Send P&L summary every N iterations
+            # ═════════════════════════════════════════════════════════════════
+            position_update_interval = CONFIG.get("position_update_interval", 6)  # Every 6 cycles = 30 min at 5m interval
+            if not hasattr(run_loop, '_position_update_counter'):
+                run_loop._position_update_counter = 0
+            
+            run_loop._position_update_counter += 1
+            
+            if run_loop._position_update_counter >= position_update_interval and positions:
+                # Build position summary
+                position_summary = []
+                total_pnl_usd = 0
+                total_pnl_pct = 0
+                
+                for pos in positions:
+                    asset = pos.get('symbol') or pos.get('coin')
+                    if not asset:
+                        continue
+                    
+                    pnl_usd = float(pos.get('unrealized_pnl', 0) or pos.get('unrealizedPnl', 0) or 0)
+                    pnl_pct = float(pos.get('unrealized_pnl_percent', 0) or 0)
+                    entry_price = float(pos.get('entry_price') or pos.get('entryPx') or pos.get('entryPrice') or 0)
+                    current_price = asset_prices.get(asset, 0)
+                    
+                    position_summary.append({
+                        'asset': asset,
+                        'pnl_usd': pnl_usd,
+                        'pnl_pct': pnl_pct,
+                        'entry': entry_price,
+                        'current': current_price
+                    })
+                    total_pnl_usd += pnl_usd
+                    total_pnl_pct += pnl_pct
+                
+                if position_summary:
+                    # Send webhook notification
+                    try:
+                        await webhook_notifier.send_notification("POSITION_UPDATE", {
+                            "positions": position_summary,
+                            "total_pnl_usd": round(total_pnl_usd, 2),
+                            "total_pnl_pct": round(total_pnl_pct, 2),
+                            "count": len(position_summary),
+                            "timestamp": str(datetime.now(timezone.utc))
+                        })
+                    except Exception as e:
+                        logging.debug(f"Position update webhook failed: {e}")
+                    
+                    # Log to console
+                    add_event(f"📊 Position Update: {len(position_summary)} positions, Total P&L: ${total_pnl_usd:.2f} ({total_pnl_pct:.1f}%)")
+                
+                run_loop._position_update_counter = 0  # Reset counter
+            
+            # ═════════════════════════════════════════════════════════════════
             # 🔍 PAIR HUNTER: Dynamically discover best trading pairs
             # ═════════════════════════════════════════════════════════════════
             enable_pair_hunter = CONFIG.get("enable_pair_hunter", False)
@@ -1368,6 +1421,23 @@ def main():
                     except (ValueError, TypeError) as e:
                         logging.debug(f"Could not calculate TP percent for {asset}: tp_price={tp_price}, entry_price={entry_price}, error={e}")
                         is_scalping_trade = False
+                
+                # PROFIT MILESTONE ALERTS: Notify as we approach targets
+                if is_scalping_trade and pnl_percent >= 5.0 and pnl_percent < tier1_profit_pct:
+                    # Check if we already notified for this milestone
+                    if active_trade_record and not active_trade_record.get('milestone_5pct_notified'):
+                        try:
+                            unrealized_pnl = float(pos.get('unrealized_pnl', 0) or pos.get('unrealizedPnl', 0) or 0)
+                            await webhook_notifier.notify_profit_milestone(
+                                asset=asset,
+                                pnl_percent=pnl_percent,
+                                pnl_usd=unrealized_pnl,
+                                milestone="Approaching 7% target"
+                            )
+                            active_trade_record['milestone_5pct_notified'] = True
+                            add_event(f"📈 {asset} at +{pnl_percent:.1f}% - Approaching 7% profit target!")
+                        except Exception as e:
+                            logging.debug(f"Milestone notification failed: {e}")
                 
                 # SCALPING STRATEGY: Close immediately at tier1 profit % (default 7%)
                 tier1_profit_pct = CONFIG.get('smart_profit_tier1_pct', 7)

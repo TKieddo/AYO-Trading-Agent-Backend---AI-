@@ -88,6 +88,26 @@ class WebhookNotifier:
             "timestamp": str(datetime.now(timezone.utc))
         })
     
+    async def notify_position_update(self, positions: list, total_pnl_usd: float, total_pnl_pct: float):
+        """Notify on periodic position update (P&L summary)"""
+        await self.send_notification("POSITION_UPDATE", {
+            "positions": positions,
+            "total_pnl_usd": total_pnl_usd,
+            "total_pnl_pct": total_pnl_pct,
+            "count": len(positions),
+            "timestamp": str(datetime.now(timezone.utc))
+        })
+    
+    async def notify_profit_milestone(self, asset: str, pnl_percent: float, pnl_usd: float, milestone: str):
+        """Notify when hitting profit milestones (e.g., +5%, approaching 7% target)"""
+        await self.send_notification("MILESTONE", {
+            "asset": asset,
+            "pnl_percent": pnl_percent,
+            "pnl_usd": pnl_usd,
+            "milestone": milestone,
+            "timestamp": str(datetime.now(timezone.utc))
+        })
+    
     async def notify_error(self, error_type: str, message: str, asset: str = ""):
         """Notify on errors"""
         await self.send_notification("ERROR", {
