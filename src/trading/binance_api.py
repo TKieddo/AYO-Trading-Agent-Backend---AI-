@@ -145,14 +145,15 @@ class BinanceAPI:
         except Exception as e:
             logger.error(f"Failed to set leverage for {asset}: {e}")
 
-    async def place_buy_order(self, asset: str, amount: float, leverage: Optional[int] = None, slippage: float = 0.01):
-        """Place a market buy order for perpetual futures.
+    async def place_buy_order(self, asset: str, amount: float, leverage: Optional[int] = None, slippage: float = 0.01, reduce_only: bool = False):
+        """Place a market buy order for perpetual futures (opens LONG or closes SHORT).
         
         Args:
             asset: Asset symbol (e.g., 'BTC')
             amount: Contract quantity (number of contracts)
             leverage: Leverage to use (defaults to configured leverage)
             slippage: Unused (kept for compatibility with Hyperliquid interface)
+            reduce_only: If True, only reduces position (for closing short positions)
         """
         symbol = self._to_futures_symbol(asset)
         lev = leverage or self.default_leverage
@@ -178,29 +179,35 @@ class BinanceAPI:
             quantity = float(f"{quantity:.{len(str(step_size).split('.')[-1])}f}")
         
         try:
-            # Place market order (BUY = LONG position)
+            # Build order params
+            order_params = {
+                'symbol': symbol,
+                'side': 'BUY',
+                'type': 'MARKET',
+                'quantity': quantity
+            }
+            # Add reduceOnly for closing positions (bypasses $5 minimum)
+            if reduce_only:
+                order_params['reduceOnly'] = 'true'
+            
             order = await self._retry(
-                lambda: self.client.futures_create_order(
-                    symbol=symbol,
-                    side='BUY',
-                    type='MARKET',
-                    quantity=quantity
-                )
+                lambda: self.client.futures_create_order(**order_params)
             )
-            logger.info(f"Placed BUY order for {asset}: {quantity} @ ~${current_price:.2f}")
+            logger.info(f"Placed BUY order for {asset}: {quantity} @ ~${current_price:.2f} (reduceOnly={reduce_only})")
             return order
         except BinanceAPIException as e:
             logger.error(f"Failed to place BUY order for {asset}: {e.message} (code: {e.code})")
             raise
 
-    async def place_sell_order(self, asset: str, amount: float, leverage: Optional[int] = None, slippage: float = 0.01):
-        """Place a market sell order for perpetual futures (opens SHORT).
+    async def place_sell_order(self, asset: str, amount: float, leverage: Optional[int] = None, slippage: float = 0.01, reduce_only: bool = False):
+        """Place a market sell order for perpetual futures (opens SHORT or closes LONG).
         
         Args:
             asset: Asset symbol (e.g., 'BTC')
             amount: Contract quantity (number of contracts)
             leverage: Leverage to use (defaults to configured leverage)
             slippage: Unused (kept for compatibility with Hyperliquid interface)
+            reduce_only: If True, only reduces position (for closing long positions)
         """
         symbol = self._to_futures_symbol(asset)
         lev = leverage or self.default_leverage
@@ -226,16 +233,21 @@ class BinanceAPI:
             quantity = float(f"{quantity:.{len(str(step_size).split('.')[-1])}f}")
         
         try:
-            # Place market order (SELL = SHORT position)
+            # Build order params
+            order_params = {
+                'symbol': symbol,
+                'side': 'SELL',
+                'type': 'MARKET',
+                'quantity': quantity
+            }
+            # Add reduceOnly for closing positions (bypasses $5 minimum)
+            if reduce_only:
+                order_params['reduceOnly'] = 'true'
+            
             order = await self._retry(
-                lambda: self.client.futures_create_order(
-                    symbol=symbol,
-                    side='SELL',
-                    type='MARKET',
-                    quantity=quantity
-                )
+                lambda: self.client.futures_create_order(**order_params)
             )
-            logger.info(f"Placed SELL order for {asset}: {quantity} @ ~${current_price:.2f}")
+            logger.info(f"Placed SELL order for {asset}: {quantity} @ ~${current_price:.2f} (reduceOnly={reduce_only})")
             return order
         except BinanceAPIException as e:
             logger.error(f"Failed to place SELL order for {asset}: {e.message} (code: {e.code})")

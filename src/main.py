@@ -732,9 +732,9 @@ def main():
                     add_event(f"🛑 FORCE CLOSING {asset} due to stop loss: {reason}")
                     close_action = "sell" if is_long else "buy"
                     if is_long:
-                        close_order = await hyperliquid.place_sell_order(asset, position_size)
+                        close_order = await hyperliquid.place_sell_order(asset, position_size, reduce_only=True)
                     else:
-                        close_order = await hyperliquid.place_buy_order(asset, position_size)
+                        close_order = await hyperliquid.place_buy_order(asset, position_size, reduce_only=True)
                     add_event(f"✅ Force closed {asset} position (Stop Loss) via {close_action} order - Loss: {pnl_percent:.2f}% (${pnl_usd:.2f})")
                     
                     # Remove from active trades
@@ -1116,9 +1116,9 @@ def main():
                             try:
                                 close_action = "sell" if is_long else "buy"
                                 if is_long:
-                                    close_order = await hyperliquid.place_sell_order(asset, position_size)
+                                    close_order = await hyperliquid.place_sell_order(asset, position_size, reduce_only=True)
                                 else:
-                                    close_order = await hyperliquid.place_buy_order(asset, position_size)
+                                    close_order = await hyperliquid.place_buy_order(asset, position_size, reduce_only=True)
                                 add_event(f"✅ Closed {asset} position (max hold time) via {close_action} order")
                                 
                                 # Remove from active trades
@@ -1364,9 +1364,9 @@ def main():
                         # Close position immediately
                         close_action = "sell" if is_long else "buy"
                         if is_long:
-                            close_order = await hyperliquid.place_sell_order(asset, position_size)
+                            close_order = await hyperliquid.place_sell_order(asset, position_size, reduce_only=True)
                         else:
-                            close_order = await hyperliquid.place_buy_order(asset, position_size)
+                            close_order = await hyperliquid.place_buy_order(asset, position_size, reduce_only=True)
                         add_event(f"✅ Closed {asset} position ({reason}) via {close_action} order - Gains Protected!")
                         
                         # Remove from active trades if present
@@ -1594,9 +1594,9 @@ def main():
                                     try:
                                         # Reduce-only market close regardless of TP/SL
                                         if is_long_pos:
-                                            await hyperliquid.place_sell_order(asset, close_size)
+                                            await hyperliquid.place_sell_order(asset, close_size, reduce_only=True)
                                         else:
-                                            await hyperliquid.place_buy_order(asset, close_size)
+                                            await hyperliquid.place_buy_order(asset, close_size, reduce_only=True)
                                         add_event(f"✅ Closed {asset} due to LLM 'sell' with zero allocation (reduce-only market close)")
                                         # Log closure intent (price captured above in asset_prices)
                                         with open(diary_path, "a") as f:
