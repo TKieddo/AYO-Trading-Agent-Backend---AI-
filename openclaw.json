@@ -1,0 +1,45 @@
+{
+  "gateway": {
+    "port": 18789,
+    "mode": "remote",
+    "bind": "0.0.0.0",
+    "auth": {
+      "mode": "token",
+      "token": "1044c265b0d10df74170c2bcd292ac239fd5035820b292f6"
+    }
+  },
+  "plugins": {
+    "entries": {
+      "whatsapp": {
+        "enabled": true
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "pollinations/kimi",
+        "fallbacks": [
+          "pollinations/deepseek",
+          "pollinations/glm"
+        ]
+      },
+      "workspace": "/app/workspace"
+    }
+  },
+  "cron": {
+    "enabled": true,
+    "jobs": [
+      {
+        "id": "polymarket_scan",
+        "schedule": "every 15m",
+        "message": "AUTONOMOUS SCAN: Search Iran successor news. Check trending Polymarket markets. If high-confidence news found AND market hasn't adjusted, recommend trade (max $2, min 15% edge). Send WhatsApp summary with opportunities."
+      },
+      {
+        "id": "arafi_price_check",
+        "schedule": "every 10m",
+        "message": "PRICE ALERT: Check Arafi market price (ID: 1469384). Current position: 2 YES @ $0.22 entry. Alert if price moves >10%. If price >= $0.50, send profit alert. If price <= $0.15, send loss warning. Include current P&L in WhatsApp message."
+      }
+    ]
+  }
+}
