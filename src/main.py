@@ -1272,17 +1272,18 @@ def main():
                                 tp_percent_from_entry = ((tp_price_float - entry_price_float) / entry_price_float) * 100
                             else:
                                 tp_percent_from_entry = ((entry_price_float - tp_price_float) / entry_price_float) * 100
-                            # Scalping trades typically have TP around 5% (4-6% range)
-                            is_scalping_trade = 4.0 <= tp_percent_from_entry <= 6.0
+                            # Scalping trades: TP around 7% (6-8% range matches SMART_PROFIT_TIER1_PCT)
+                            is_scalping_trade = 6.0 <= tp_percent_from_entry <= 8.0
                     except (ValueError, TypeError) as e:
                         logging.debug(f"Could not calculate TP percent for {asset}: tp_price={tp_price}, entry_price={entry_price}, error={e}")
                         is_scalping_trade = False
                 
-                # SCALPING STRATEGY: Close immediately at 5% profit
-                if is_scalping_trade and pnl_percent >= 5.0:
+                # SCALPING STRATEGY: Close immediately at tier1 profit % (default 7%)
+                tier1_profit_pct = CONFIG.get('smart_profit_tier1_pct', 7)
+                if is_scalping_trade and pnl_percent >= tier1_profit_pct:
                     should_take_profit = True
                     profit_reason = f"Scalping target reached ({pnl_percent:.1f}%) - closing immediately"
-                    add_event(f"🎯 Scalping trade {asset}: Reached 5% target ({pnl_percent:.1f}%), closing immediately")
+                    add_event(f"🎯 Scalping trade {asset}: Reached {tier1_profit_pct}% target ({pnl_percent:.1f}%), closing immediately")
                 
                 # TREND STRATEGY: Use higher thresholds, let indicators guide exits
                 elif not is_scalping_trade:
