@@ -23,7 +23,8 @@ export async function GET() {
     }
 
     const stats: Record<string, any> = {};
-    for (const row of data || []) {
+    const rows = (data ?? []) as Array<Record<string, unknown>>;
+    for (const row of rows) {
       const asset = String(row.asset || "").toUpperCase();
       if (!asset) continue;
       stats[asset] = {
