@@ -96,7 +96,7 @@ class WebhookNotifier:
         """Send event to generic webhook; if it's Telegram endpoint, send Telegram-compatible payload."""
         if not self.enabled_webhook or not self.webhook_url:
             return False
-
+        
         try:
             if self._is_telegram_send_message_url(self.webhook_url):
                 chat_id = self.telegram_chat_id or data.get("chat_id")
@@ -114,7 +114,7 @@ class WebhookNotifier:
                     "timestamp": data.get("timestamp", ""),
                     "data": data
                 }
-
+            
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     self.webhook_url,

@@ -291,6 +291,9 @@ def main():
     # Perp mid-price history sampled each loop (authoritative, avoids spot/perp basis mismatch)
     price_history = {}
     pair_hunter_stats = {}
+    pair_hunter_db_api_disabled = False
+    pair_hunter_supabase_client = None
+    pair_hunter_supabase_unavailable_logged = False
 
     logging.info(f"Starting trading agent for assets: {args.assets} at interval: {args.interval}")
 
@@ -331,47 +334,155 @@ def main():
             or "http://localhost:3001"
         )
 
-    async def _load_pair_hunter_stats():
-        """Load pair-hunter performance stats from dashboard DB API (fallback to local file)."""
-        nonlocal pair_hunter_stats
-        api_url = _get_dashboard_api_url()
+    def _get_pair_hunter_supabase_client():
+        """Get direct Supabase client for production-safe Pair Hunter stat persistence."""
+        nonlocal pair_hunter_supabase_client, pair_hunter_supabase_unavailable_logged
+        if pair_hunter_supabase_client is not None:
+            return pair_hunter_supabase_client
         try:
-            async with ClientSession() as session:
-                async with session.get(
-                    f"{api_url}/api/pair-hunter/stats",
-                    timeout=ClientTimeout(total=8)
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        if isinstance(data, dict) and isinstance(data.get("stats"), dict):
-                            pair_hunter_stats = data["stats"]
-                            add_event(f"📚 Loaded Pair Hunter stats from DB for {len(pair_hunter_stats)} assets")
-                            _save_pair_hunter_stats_local()
-                            return
-                    logging.warning(f"Pair Hunter DB stats fetch returned status {resp.status}, using local fallback")
+            from supabase import create_client, Client
+            supabase_url = os.getenv("SUPABASE_URL")
+            supabase_key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY")
+            if not supabase_url or not supabase_key:
+                if not pair_hunter_supabase_unavailable_logged:
+                    logging.warning("Pair Hunter direct DB fallback unavailable: SUPABASE_URL or SUPABASE_SERVICE_KEY missing.")
+                    pair_hunter_supabase_unavailable_logged = True
+                return None
+            pair_hunter_supabase_client = create_client(supabase_url, supabase_key)
+            return pair_hunter_supabase_client
         except Exception as e:
-            logging.warning(f"Could not load Pair Hunter stats from DB API: {e}")
+            if not pair_hunter_supabase_unavailable_logged:
+                logging.warning(f"Pair Hunter direct DB fallback unavailable: {e}")
+                pair_hunter_supabase_unavailable_logged = True
+            return None
+
+    async def _load_pair_hunter_stats():
+        """Load pair-hunter performance stats from dashboard API, then direct DB, then local file."""
+        nonlocal pair_hunter_stats, pair_hunter_db_api_disabled
+        loaded_from_remote = False
+        if not pair_hunter_db_api_disabled:
+            api_url = _get_dashboard_api_url()
+            try:
+                async with ClientSession() as session:
+                    async with session.get(
+                        f"{api_url}/api/pair-hunter/stats",
+                        timeout=ClientTimeout(total=8)
+                    ) as resp:
+                        if resp.status == 200:
+                            data = await resp.json()
+                            if isinstance(data, dict) and isinstance(data.get("stats"), dict):
+                                pair_hunter_stats = data["stats"]
+                                add_event(f"📚 Loaded Pair Hunter stats from DB for {len(pair_hunter_stats)} assets")
+                                _save_pair_hunter_stats_local()
+                                return
+                        if resp.status == 404:
+                            pair_hunter_db_api_disabled = True
+                            logging.warning(
+                                f"Pair Hunter stats endpoint not found at {api_url}/api/pair-hunter/stats (404). "
+                                "Falling back to direct Supabase query and local cache."
+                            )
+                        else:
+                            logging.warning(f"Pair Hunter DB stats fetch returned status {resp.status}, trying fallback")
+            except Exception as e:
+                logging.warning(f"Could not load Pair Hunter stats from DB API: {e}")
+
+        # Production fallback: direct Supabase read if dashboard API is unavailable.
+        try:
+            supabase_client = _get_pair_hunter_supabase_client()
+            if supabase_client:
+                result = supabase_client.table("pair_hunter_stats").select("*").execute()
+                rows = getattr(result, "data", None) or []
+                stats = {}
+                for row in rows:
+                    asset = str((row or {}).get("asset") or "").upper().strip()
+                    if not asset:
+                        continue
+                    stats[asset] = {
+                        "total_trades": int((row or {}).get("total_trades") or 0),
+                        "wins": int((row or {}).get("wins") or 0),
+                        "losses": int((row or {}).get("losses") or 0),
+                        "win_rate": float((row or {}).get("win_rate") or 0.0),
+                        "total_pnl_usd": float((row or {}).get("total_pnl_usd") or 0.0),
+                        "total_pnl_percent": float((row or {}).get("total_pnl_percent") or 0.0),
+                        "expectancy_usd": float((row or {}).get("expectancy_usd") or 0.0),
+                        "expectancy_percent": float((row or {}).get("expectancy_percent") or 0.0),
+                        "data_fail_count": int((row or {}).get("data_fail_count") or 0),
+                        "excluded_until": (row or {}).get("excluded_until"),
+                        "exclusion_reason": str((row or {}).get("exclusion_reason") or ""),
+                        "last_data_error": str((row or {}).get("last_data_error") or ""),
+                        "last_close_reason": str((row or {}).get("last_close_reason") or ""),
+                        "last_updated": (row or {}).get("last_updated") or (row or {}).get("updated_at") or datetime.now(timezone.utc).isoformat(),
+                    }
+                pair_hunter_stats = stats
+                add_event(f"📚 Loaded Pair Hunter stats via direct Supabase for {len(pair_hunter_stats)} assets")
+                _save_pair_hunter_stats_local()
+                loaded_from_remote = True
+        except Exception as e:
+            logging.warning(f"Could not load Pair Hunter stats via direct Supabase: {e}")
+
+        if loaded_from_remote:
+            return
         _load_pair_hunter_stats_local()
 
     async def _upsert_pair_hunter_stat_to_db(asset: str, stat_row: dict):
-        """Persist a single pair stat to dashboard DB API."""
-        api_url = _get_dashboard_api_url()
-        payload = {
-            "asset": asset,
-            "stats": stat_row
-        }
+        """Persist a single pair stat to dashboard API, with direct Supabase fallback."""
+        nonlocal pair_hunter_db_api_disabled
+        api_ok = False
+        if not pair_hunter_db_api_disabled:
+            api_url = _get_dashboard_api_url()
+            payload = {
+                "asset": asset,
+                "stats": stat_row
+            }
+            try:
+                async with ClientSession() as session:
+                    async with session.post(
+                        f"{api_url}/api/pair-hunter/stats",
+                        json=payload,
+                        timeout=ClientTimeout(total=8)
+                    ) as resp:
+                        if resp.status == 404:
+                            pair_hunter_db_api_disabled = True
+                            logging.warning(
+                                f"Pair Hunter stats endpoint not found at {api_url}/api/pair-hunter/stats (404). "
+                                "Switching to direct Supabase writes."
+                            )
+                        elif resp.status in (200, 201):
+                            api_ok = True
+                        else:
+                            body = await resp.text()
+                            logging.warning(f"Pair Hunter DB upsert failed ({resp.status}): {body[:200]}")
+            except Exception as e:
+                logging.warning(f"Could not upsert Pair Hunter stat to DB API: {e}")
+        if api_ok:
+            return
+
+        # Production fallback: direct Supabase write when dashboard API is unavailable.
         try:
-            async with ClientSession() as session:
-                async with session.post(
-                    f"{api_url}/api/pair-hunter/stats",
-                    json=payload,
-                    timeout=ClientTimeout(total=8)
-                ) as resp:
-                    if resp.status not in (200, 201):
-                        body = await resp.text()
-                        logging.warning(f"Pair Hunter DB upsert failed ({resp.status}): {body[:200]}")
+            supabase_client = _get_pair_hunter_supabase_client()
+            if not supabase_client:
+                return
+            row = {
+                "asset": asset,
+                "total_trades": int(stat_row.get("total_trades", 0) or 0),
+                "wins": int(stat_row.get("wins", 0) or 0),
+                "losses": int(stat_row.get("losses", 0) or 0),
+                "win_rate": float(stat_row.get("win_rate", 0.0) or 0.0),
+                "total_pnl_usd": float(stat_row.get("total_pnl_usd", 0.0) or 0.0),
+                "total_pnl_percent": float(stat_row.get("total_pnl_percent", 0.0) or 0.0),
+                "expectancy_usd": float(stat_row.get("expectancy_usd", 0.0) or 0.0),
+                "expectancy_percent": float(stat_row.get("expectancy_percent", 0.0) or 0.0),
+                "data_fail_count": int(stat_row.get("data_fail_count", 0) or 0),
+                "excluded_until": stat_row.get("excluded_until"),
+                "exclusion_reason": str(stat_row.get("exclusion_reason", "") or ""),
+                "last_data_error": str(stat_row.get("last_data_error", "") or ""),
+                "last_close_reason": str(stat_row.get("last_close_reason", "") or ""),
+                "last_updated": stat_row.get("last_updated") or datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            supabase_client.table("pair_hunter_stats").upsert(row, on_conflict="asset").execute()
         except Exception as e:
-            logging.warning(f"Could not upsert Pair Hunter stat to DB API: {e}")
+            logging.warning(f"Could not upsert Pair Hunter stat via direct Supabase: {e}")
 
     async def _record_pair_hunter_outcome(asset: str, pnl_usd: float, pnl_percent: float, close_reason: str):
         """Update win/loss + expectancy metrics for a closed trade asset."""
