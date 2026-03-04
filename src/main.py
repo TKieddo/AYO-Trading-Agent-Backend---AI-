@@ -342,13 +342,17 @@ def main():
         try:
             from supabase import create_client, Client
             supabase_url = os.getenv("SUPABASE_URL")
-            supabase_key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY")
-            if not supabase_url or not supabase_key:
+            # Direct fallback writes need service role to bypass RLS in production.
+            supabase_service_key = os.getenv("SUPABASE_SERVICE_KEY")
+            if not supabase_url or not supabase_service_key:
                 if not pair_hunter_supabase_unavailable_logged:
-                    logging.warning("Pair Hunter direct DB fallback unavailable: SUPABASE_URL or SUPABASE_SERVICE_KEY missing.")
+                    logging.warning(
+                        "Pair Hunter direct DB fallback unavailable: SUPABASE_URL or SUPABASE_SERVICE_KEY missing. "
+                        "Set SUPABASE_SERVICE_KEY for production-safe Pair Hunter DB writes."
+                    )
                     pair_hunter_supabase_unavailable_logged = True
                 return None
-            pair_hunter_supabase_client = create_client(supabase_url, supabase_key)
+            pair_hunter_supabase_client = create_client(supabase_url, supabase_service_key)
             return pair_hunter_supabase_client
         except Exception as e:
             if not pair_hunter_supabase_unavailable_logged:
