@@ -106,6 +106,24 @@ class BinanceAPI:
         """Convert Binance Futures symbol (BTCUSDT) to asset name (BTC)."""
         return symbol.replace("USDT", "")
 
+    async def _get_active_position_side(self, symbol: str) -> Optional[str]:
+        """Return active positionSide ('LONG'/'SHORT') when available."""
+        try:
+            positions = await self._retry(lambda: self.client.futures_position_information(symbol=symbol))
+            for pos in positions:
+                if pos.get("symbol") != symbol:
+                    continue
+                pos_amt = float(pos.get("positionAmt", 0) or 0)
+                if abs(pos_amt) <= 0:
+                    continue
+                side = (pos.get("positionSide") or "").upper().strip()
+                if side in {"LONG", "SHORT"}:
+                    return side
+                return "LONG" if pos_amt > 0 else "SHORT"
+        except Exception:
+            return None
+        return None
+
     async def _retry(self, fn, *args, max_attempts: int = 3, backoff: float = 0.5, **kwargs):
         """Retry helper with exponential backoff."""
         last_err = None
@@ -321,6 +339,7 @@ class BinanceAPI:
         try:
             # Close position: if long, sell to close; if short, buy to close
             side = 'SELL' if is_long else 'BUY'
+            position_side = await self._get_active_position_side(symbol)
             
             # Use closePosition=true instead of quantity for more reliable execution
             # But only if we have an actual position
@@ -332,6 +351,8 @@ class BinanceAPI:
                 'reduceOnly': True,
                 'workingType': 'CONTRACT_PRICE'  # Use contract price for trigger
             }
+            if position_side:
+                order_params['positionSide'] = position_side
             
             # Use quantity if specified and valid, otherwise let Binance determine
             if quantity and quantity > 0:
@@ -344,11 +365,56 @@ class BinanceAPI:
             logger.info(f"Placed TP order for {asset}: {quantity} @ ${tp_price:.2f}{price_info}")
             return order
         except BinanceAPIException as e:
-            logger.error(f"Failed to place TP order for {asset}: {e.message} (code: {e.code})")
-            # Some symbols/endpoints reject TP_MARKET on this route (-4120).
-            # Fallback to a reduce-only LIMIT take-profit order.
             if e.code == -4120:
-                logger.warning(f"TP_MARKET not supported for {asset}, falling back to reduce-only LIMIT TP")
+                logger.warning(
+                    f"Primary TP order type unsupported for {asset} (code -4120). "
+                    "Trying compatible TP fallbacks."
+                )
+            else:
+                logger.error(f"Failed to place TP order for {asset}: {e.message} (code: {e.code})")
+            # Some symbols/endpoints reject TP_MARKET on this route (-4120).
+            # Fallback 1: reduce-only TAKE_PROFIT limit algo order.
+            if e.code == -4120:
+                logger.warning(f"TP_MARKET not supported for {asset}, trying reduce-only TAKE_PROFIT limit order")
+                try:
+                    fallback_order = await self._retry(
+                        lambda: self.client.futures_create_order(
+                            symbol=symbol,
+                            side=side,
+                            type='TAKE_PROFIT',
+                            stopPrice=tp_price,
+                            price=tp_price,
+                            timeInForce='GTC',
+                            quantity=quantity,
+                            reduceOnly='true',
+                            **({'positionSide': position_side} if position_side else {})
+                        )
+                    )
+                    logger.info(f"Placed fallback TAKE_PROFIT TP for {asset}: {quantity} @ ${tp_price:.2f}")
+                    return fallback_order
+                except Exception as e2:
+                    logger.warning(f"Fallback TAKE_PROFIT TP failed for {asset}: {e2}")
+
+                # Fallback 2: closePosition TP_MARKET without quantity.
+                try:
+                    fallback_order = await self._retry(
+                        lambda: self.client.futures_create_order(
+                            symbol=symbol,
+                            side=side,
+                            type='TAKE_PROFIT_MARKET',
+                            stopPrice=tp_price,
+                            closePosition='true',
+                            workingType='CONTRACT_PRICE',
+                            **({'positionSide': position_side} if position_side else {})
+                        )
+                    )
+                    logger.info(f"Placed fallback closePosition TP_MARKET for {asset} @ ${tp_price:.2f}")
+                    return fallback_order
+                except Exception as e2:
+                    logger.warning(f"Fallback closePosition TP_MARKET failed for {asset}: {e2}")
+
+                # Fallback 3: reduce-only LIMIT take-profit order.
+                logger.warning(f"Trying final fallback reduce-only LIMIT TP for {asset}")
                 try:
                     fallback_order = await self._retry(
                         lambda: self.client.futures_create_order(
@@ -358,13 +424,33 @@ class BinanceAPI:
                             price=tp_price,
                             timeInForce='GTC',
                             quantity=quantity,
-                            reduceOnly='true'
+                            reduceOnly='true',
+                            **({'positionSide': position_side} if position_side else {})
                         )
                     )
                     logger.info(f"Placed fallback LIMIT TP for {asset}: {quantity} @ ${tp_price:.2f}")
                     return fallback_order
                 except Exception as e2:
                     logger.error(f"Fallback LIMIT TP failed for {asset}: {e2}")
+            if e.code == -2022 and position_side and quantity and quantity > 0:
+                logger.warning(f"ReduceOnly rejected for {asset}, retrying TP with positionSide-only close semantics")
+                try:
+                    order = await self._retry(
+                        lambda: self.client.futures_create_order(
+                            symbol=symbol,
+                            side=side,
+                            type='TAKE_PROFIT',
+                            stopPrice=tp_price,
+                            price=tp_price,
+                            timeInForce='GTC',
+                            quantity=quantity,
+                            positionSide=position_side
+                        )
+                    )
+                    logger.info(f"Placed TP with positionSide fallback for {asset}: {quantity} @ ${tp_price:.2f}")
+                    return order
+                except Exception as e2:
+                    logger.error(f"PositionSide TP fallback failed for {asset}: {e2}")
             # If quantity error, try with closePosition
             if e.code in [-2021, -4006]:  # Order would immediately trigger or insufficient position
                 logger.info(f"Retrying TP with closePosition for {asset}")
@@ -453,6 +539,7 @@ class BinanceAPI:
         try:
             # Close position: if long, sell to close; if short, buy to close
             side = 'SELL' if is_long else 'BUY'
+            position_side = await self._get_active_position_side(symbol)
             
             # Use closePosition=true for more reliable execution
             order_params = {
@@ -463,6 +550,8 @@ class BinanceAPI:
                 'reduceOnly': True,
                 'workingType': 'CONTRACT_PRICE'  # Use contract price for trigger
             }
+            if position_side:
+                order_params['positionSide'] = position_side
             
             # Use quantity if specified and valid
             if quantity and quantity > 0:
@@ -496,13 +585,56 @@ class BinanceAPI:
                             price=limit_price,
                             timeInForce='GTC',
                             quantity=quantity,
-                            reduceOnly='true'
+                            reduceOnly='true',
+                            **({'positionSide': position_side} if position_side else {})
                         )
                     )
                     logger.info(f"Placed fallback STOP SL for {asset}: {quantity} stop=${sl_price:.2f} limit=${limit_price:.2f}")
                     return fallback_order
                 except Exception as e2:
-                    logger.error(f"Fallback STOP SL failed for {asset}: {e2}")
+                    logger.warning(f"Fallback STOP SL failed for {asset}: {e2}")
+
+                # Fallback: closePosition stop-market path.
+                try:
+                    fallback_order = await self._retry(
+                        lambda: self.client.futures_create_order(
+                            symbol=symbol,
+                            side=side,
+                            type='STOP_MARKET',
+                            stopPrice=sl_price,
+                            closePosition='true',
+                            workingType='CONTRACT_PRICE',
+                            **({'positionSide': position_side} if position_side else {})
+                        )
+                    )
+                    logger.info(f"Placed fallback closePosition STOP_MARKET for {asset} @ ${sl_price:.2f}")
+                    return fallback_order
+                except Exception as e2:
+                    logger.error(f"Fallback closePosition STOP_MARKET failed for {asset}: {e2}")
+            if e.code == -2022 and position_side and quantity and quantity > 0:
+                logger.warning(f"ReduceOnly rejected for {asset}, retrying SL with positionSide-only close semantics")
+                try:
+                    limit_price = sl_price * (0.999 if is_long else 1.001)
+                    if symbol_info:
+                        tick_size = float([f['tickSize'] for f in symbol_info['filters'] if f['filterType'] == 'PRICE_FILTER'][0])
+                        limit_price = round(limit_price / tick_size) * tick_size
+                        limit_price = float(f"{limit_price:.{len(str(tick_size).split('.')[-1])}f}")
+                    order = await self._retry(
+                        lambda: self.client.futures_create_order(
+                            symbol=symbol,
+                            side=side,
+                            type='STOP',
+                            stopPrice=sl_price,
+                            price=limit_price,
+                            timeInForce='GTC',
+                            quantity=quantity,
+                            positionSide=position_side
+                        )
+                    )
+                    logger.info(f"Placed SL with positionSide fallback for {asset}: stop=${sl_price:.2f} limit=${limit_price:.2f}")
+                    return order
+                except Exception as e2:
+                    logger.error(f"PositionSide SL fallback failed for {asset}: {e2}")
             # If quantity error, try with closePosition
             if e.code in [-2021, -4006]:  # Order would immediately trigger or insufficient position
                 logger.info(f"Retrying SL with closePosition for {asset}")
@@ -514,7 +646,8 @@ class BinanceAPI:
                             type='STOP_MARKET',
                             stopPrice=sl_price,
                             closePosition='true',  # Close entire position
-                            workingType='CONTRACT_PRICE'
+                            workingType='CONTRACT_PRICE',
+                            **({'positionSide': position_side} if position_side else {})
                         )
                     )
                     logger.info(f"Placed SL order with closePosition for {asset} @ ${sl_price:.2f}")

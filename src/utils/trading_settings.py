@@ -42,6 +42,17 @@ def _load_cached_trading_settings() -> Optional[Dict[str, Any]]:
         return None
 
 
+def _apply_env_bool_overrides(settings: Dict[str, Any]) -> Dict[str, Any]:
+    """Allow explicit Railway env booleans to override DB/cached values."""
+    val = os.getenv("AGENT_MANAGE_EXITS")
+    if val is not None:
+        settings["agent_manage_exits"] = val.strip().lower() in {"1", "true", "yes", "on"}
+    val = os.getenv("ENABLE_STOP_LOSS_ORDERS")
+    if val is not None:
+        settings["enable_stop_loss_orders"] = val.strip().lower() in {"1", "true", "yes", "on"}
+    return settings
+
+
 async def get_trading_settings() -> Dict[str, Any]:
     """Fetch trading settings from database API. ALWAYS uses database settings.
     
@@ -113,7 +124,7 @@ async def get_trading_settings() -> Dict[str, Any]:
                         "deepseek_max_tokens": int(data.get("deepseek_max_tokens", 20000)),
                     }
                     _save_cached_trading_settings(settings)
-                    return settings
+                    return _apply_env_bool_overrides(settings)
                 else:
                     logging.warning(f"⚠️  Failed to fetch trading settings from database (status {resp.status}), using defaults")
     except Exception as e:
@@ -122,7 +133,7 @@ async def get_trading_settings() -> Dict[str, Any]:
     cached_settings = _load_cached_trading_settings()
     if cached_settings:
         logging.warning("⚠️  Using cached trading settings from last successful database fetch.")
-        return cached_settings
+        return _apply_env_bool_overrides(cached_settings)
     
     # Fallback to env/config defaults (ONLY if database is unavailable)
     logging.warning("⚠️  Using .env defaults as fallback. Database settings should be used instead!")
@@ -134,7 +145,7 @@ async def get_trading_settings() -> Dict[str, Any]:
             asset = key.replace("_LEVERAGE", "").upper()
             asset_leverage_overrides[asset] = int(value)
     
-    return {
+    fallback_settings = {
         # Position sizing
         "leverage": CONFIG.get("default_leverage", 10),
         "take_profit_percent": CONFIG.get("take_profit_percent", 5),
@@ -181,6 +192,7 @@ async def get_trading_settings() -> Dict[str, Any]:
         "llm_model": CONFIG.get("llm_model", "deepseek-reasoner"),
         "deepseek_max_tokens": CONFIG.get("deepseek_max_tokens", 20000),
     }
+    return _apply_env_bool_overrides(fallback_settings)
 
 
 async def get_max_leverage_for_asset(exchange_api, asset: str) -> int:

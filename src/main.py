@@ -1266,8 +1266,13 @@ def main():
                         "current_price": current_price,
                     })
             
-            # Close positions that hit stop loss BEFORE AI decision
-            for pos_to_close in positions_to_close:
+            # Close positions that hit stop loss BEFORE AI decision (unless TP/SL-only mode is enabled)
+            if not agent_manage_exits and positions_to_close:
+                add_event(
+                    f"🛡️  TP/SL-only mode: skipping {len(positions_to_close)} bot-driven stop-loss market close(s). "
+                    "Exchange protective orders are expected to handle exits."
+                )
+            for pos_to_close in ([] if not agent_manage_exits else positions_to_close):
                 asset = pos_to_close["asset"]
                 is_long = pos_to_close["is_long"]
                 position_size = pos_to_close["position_size"]
@@ -1686,6 +1691,36 @@ def main():
                     logging.warning(f"Could not convert prices to float for {asset}: entry_price={entry_price}, tp_price={tp_price}, sl_price={sl_price}, error={e}")
                     if not entry_price or entry_price <= 0:
                         continue
+
+                # TP/SL-only close mode: ensure exchange protective orders exist and skip bot-driven closes.
+                if not agent_manage_exits:
+                    if not tp_price or not sl_price:
+                        calc_tp, calc_sl = calculate_tp_sl_prices(entry_price, is_long, tp_percent, sl_percent)
+                        if not tp_price:
+                            tp_price = calc_tp
+                            add_event(f"📊 TP/SL-only mode: calculated TP for {asset} at {tp_price:.4f}")
+                        if not sl_price:
+                            sl_price = calc_sl
+                            add_event(f"🛡️  TP/SL-only mode: calculated SL for {asset} at {sl_price:.4f}")
+
+                    tp_sl_only_settings = dict(trading_settings or {})
+                    tp_sl_only_settings["enable_stop_loss_orders"] = True
+                    protection = await _ensure_protective_orders(
+                        asset=asset,
+                        is_long=is_long,
+                        position_size=position_size,
+                        tp_price=tp_price,
+                        sl_price=sl_price,
+                        trading_settings=tp_sl_only_settings,
+                    )
+                    tp_oid = protection.get("tp_oid")
+                    sl_oid = protection.get("sl_oid")
+                    if not tp_oid or not sl_oid:
+                        add_event(
+                            f"⚠️  TP/SL-only mode {asset}: protective orders incomplete "
+                            f"(TP oid: {'yes' if tp_oid else 'no'}, SL oid: {'yes' if sl_oid else 'no'})."
+                        )
+                    continue
                 
                 # Calculate current PNL percentage
                 unrealized_pnl = pos.get('unrealized_pnl') or pos.get('pnl') or 0
@@ -2398,13 +2433,16 @@ def main():
                             except Exception as e:
                                 add_event(f"⚠️  Could not cancel existing orders for {asset}: {e}")
                             
+                            protection_settings = dict(trading_settings or {})
+                            if not agent_manage_exits:
+                                protection_settings["enable_stop_loss_orders"] = True
                             protection = await _ensure_protective_orders(
                                 asset=asset,
                                 is_long=is_buy,
                                 position_size=actual_position_size,
                                 tp_price=tp_price,
                                 sl_price=sl_price,
-                                trading_settings=trading_settings,
+                                trading_settings=protection_settings,
                             )
                             tp_price = protection.get("tp_price")
                             sl_price = protection.get("sl_price")
@@ -2681,6 +2719,8 @@ def main():
         confirmed_sl = None
         confirmed_tp_oid = None
         confirmed_sl_oid = None
+        if not is_long:
+            add_event(f"ℹ️  {asset} short position: both TP and SL close-orders appear as BUY reduce-only on exchange.")
 
         # Attempt placement first (best effort)
         if tp_price:
