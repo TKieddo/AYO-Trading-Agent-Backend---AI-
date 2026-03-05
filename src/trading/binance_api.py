@@ -206,7 +206,11 @@ class BinanceAPI:
             }
             # Add reduceOnly for closing positions (bypasses $5 minimum)
             if reduce_only:
-                order_params['reduceOnly'] = 'true'
+                position_side = await self._get_active_position_side(symbol)
+                if position_side:
+                    order_params['positionSide'] = position_side
+                else:
+                    order_params['reduceOnly'] = 'true'
             
             order = await self._retry(
                 lambda: self.client.futures_create_order(**order_params)
@@ -260,7 +264,11 @@ class BinanceAPI:
             }
             # Add reduceOnly for closing positions (bypasses $5 minimum)
             if reduce_only:
-                order_params['reduceOnly'] = 'true'
+                position_side = await self._get_active_position_side(symbol)
+                if position_side:
+                    order_params['positionSide'] = position_side
+                else:
+                    order_params['reduceOnly'] = 'true'
             
             order = await self._retry(
                 lambda: self.client.futures_create_order(**order_params)
@@ -348,11 +356,12 @@ class BinanceAPI:
                 'side': side,
                 'type': 'TAKE_PROFIT_MARKET',
                 'stopPrice': tp_price,
-                'reduceOnly': True,
                 'workingType': 'CONTRACT_PRICE'  # Use contract price for trigger
             }
             if position_side:
                 order_params['positionSide'] = position_side
+            else:
+                order_params['reduceOnly'] = True
             
             # Use quantity if specified and valid, otherwise let Binance determine
             if quantity and quantity > 0:
@@ -386,7 +395,7 @@ class BinanceAPI:
                             price=tp_price,
                             timeInForce='GTC',
                             quantity=quantity,
-                            reduceOnly='true',
+                            **({'reduceOnly': 'true'} if not position_side else {}),
                             **({'positionSide': position_side} if position_side else {})
                         )
                     )
@@ -424,7 +433,7 @@ class BinanceAPI:
                             price=tp_price,
                             timeInForce='GTC',
                             quantity=quantity,
-                            reduceOnly='true',
+                            **({'reduceOnly': 'true'} if not position_side else {}),
                             **({'positionSide': position_side} if position_side else {})
                         )
                     )
@@ -547,11 +556,12 @@ class BinanceAPI:
                 'side': side,
                 'type': 'STOP_MARKET',
                 'stopPrice': sl_price,
-                'reduceOnly': True,
                 'workingType': 'CONTRACT_PRICE'  # Use contract price for trigger
             }
             if position_side:
                 order_params['positionSide'] = position_side
+            else:
+                order_params['reduceOnly'] = True
             
             # Use quantity if specified and valid
             if quantity and quantity > 0:
@@ -585,7 +595,7 @@ class BinanceAPI:
                             price=limit_price,
                             timeInForce='GTC',
                             quantity=quantity,
-                            reduceOnly='true',
+                            **({'reduceOnly': 'true'} if not position_side else {}),
                             **({'positionSide': position_side} if position_side else {})
                         )
                     )
