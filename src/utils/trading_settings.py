@@ -104,6 +104,7 @@ async def get_trading_settings() -> Dict[str, Any]:
                         "take_profit_strict_enforcement": bool(data.get("take_profit_strict_enforcement", False)),
                         "hard_max_loss_cap_percent": float(data.get("hard_max_loss_cap_percent", 8.0)),
                         "enable_stop_loss_orders": bool(data.get("enable_stop_loss_orders", CONFIG.get("enable_stop_loss_orders", True))),
+                        "agent_manage_exits": bool(data.get("agent_manage_exits", CONFIG.get("agent_manage_exits", True))),
                         # Per-asset overrides
                         "asset_leverage_overrides": asset_leverage_overrides,
                         "asset_timeframes": asset_timeframes,
@@ -172,6 +173,7 @@ async def get_trading_settings() -> Dict[str, Any]:
         "take_profit_strict_enforcement": CONFIG.get("take_profit_strict_enforcement", False),
         "hard_max_loss_cap_percent": float(CONFIG.get("stop_loss_percent", 8.0) or 8.0),
         "enable_stop_loss_orders": CONFIG.get("enable_stop_loss_orders", True),
+        "agent_manage_exits": CONFIG.get("agent_manage_exits", True),
         # Per-asset overrides
         "asset_leverage_overrides": asset_leverage_overrides,
         "asset_timeframes": {},  # Would need to parse from env if needed

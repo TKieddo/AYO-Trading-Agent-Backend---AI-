@@ -1171,6 +1171,9 @@ def main():
             take_profit_strict_enforcement = trading_settings.get("take_profit_strict_enforcement", False)
             stop_loss_usd = trading_settings.get("stop_loss_usd")  # Optional: stop loss in USD (e.g., -$18)
             enable_stop_loss_orders = trading_settings.get("enable_stop_loss_orders", True)  # Enable automatic SL orders on exchange
+            agent_manage_exits = bool(trading_settings.get("agent_manage_exits", CONFIG.get("agent_manage_exits", True)))
+            if not agent_manage_exits:
+                add_event("🛡️  TP/SL-only close mode active: agent-driven exits are disabled.")
             # Position sizing settings (target_profit_per_1pct_move, max_positions, position_sizing_mode) are in trading_settings dict
             # These come from database or .env file (TARGET_PROFIT_PER_1PCT_MOVE, MAX_POSITIONS, POSITION_SIZING_MODE)
             
@@ -1334,6 +1337,7 @@ def main():
                     "scalping_tp_percent": scalping_tp_percent,  # Scalping strategy TP%
                     "scalping_sl_percent": scalping_sl_percent,  # Scalping strategy SL%
                     "take_profit_strict_enforcement": take_profit_strict_enforcement,  # If true, TP must be strictly enforced
+                    "agent_manage_exits": agent_manage_exits,  # If false, do not close positions from agent logic except TP/SL checks
                     "margin_per_position": trading_settings.get("margin_per_position"),  # MANDATORY - always use margin mode
                     "max_positions": trading_settings.get("max_positions", 5),
                     "position_sizing_mode": "margin",  # ALWAYS margin mode - system enforces this
@@ -1721,7 +1725,7 @@ def main():
                 # ========================================================================
                 
                 # 1. MAXIMUM HOLD TIME CHECK
-                max_hold_hours = CONFIG.get('max_position_hold_hours', 24.0)
+                max_hold_hours = CONFIG.get('max_position_hold_hours', 24.0) if agent_manage_exits else 0
                 if opened_at_str and max_hold_hours > 0:
                     try:
                         if 'T' in opened_at_str:
@@ -1772,7 +1776,7 @@ def main():
                         logging.warning(f"Could not parse opened_at for {asset} max hold check: {e}")
                 
                 # 2. DRAWDOWN PROTECTION: Close if profit drops significantly from peak
-                enable_drawdown = CONFIG.get('enable_drawdown_protection', True)
+                enable_drawdown = CONFIG.get('enable_drawdown_protection', True) if agent_manage_exits else False
                 max_drawdown_pct = CONFIG.get('max_drawdown_from_peak_pct', 5.0)
                 drawdown_min_peak_profit_pct = CONFIG.get('drawdown_min_peak_profit_pct', 3.0)
                 drawdown_confirm_cycles = max(1, int(CONFIG.get('drawdown_confirm_cycles', 2) or 2))
@@ -1797,7 +1801,7 @@ def main():
                     active_trade_record["drawdown_trigger_count"] = 0
                 
                 # 2b. LOSS PROTECTION: Close if position is down significantly (backup if AI doesn't close)
-                loss_protection_pct = CONFIG.get('loss_protection_pct', 5.0)  # Close if down 5%+
+                loss_protection_pct = CONFIG.get('loss_protection_pct', 5.0) if agent_manage_exits else 0.0  # Close if down 5%+
                 loss_protection_min_hours = CONFIG.get('loss_protection_min_hours', 1.0)
                 loss_protection_confirm_cycles = max(1, int(CONFIG.get('loss_protection_confirm_cycles', 2) or 2))
                 if pnl_percent <= -loss_protection_pct:
@@ -1907,7 +1911,7 @@ def main():
                 # SMART PROFIT-TAKING: Adjust TP dynamically based on current profit
                 # Consider fees (~0.04% per entry/exit = ~0.08% round trip)
                 # Take profits at reasonable levels, don't be too greedy
-                should_take_profit = drawdown_should_close  # Start with drawdown protection flag
+                should_take_profit = drawdown_should_close if agent_manage_exits else False  # Start with drawdown flag only when exits enabled
                 profit_reason = drawdown_reason if drawdown_should_close else ""
                 
                 # Check if this is a scalping trade (TP around 5%)
@@ -1929,6 +1933,7 @@ def main():
                         is_scalping_trade = False
                 
                 # PROFIT MILESTONE ALERTS: Notify as we approach targets
+                tier1_profit_pct = CONFIG.get('smart_profit_tier1_pct', 7)
                 if is_scalping_trade and pnl_percent >= 5.0 and pnl_percent < tier1_profit_pct:
                     # Check if we already notified for this milestone
                     if active_trade_record and not active_trade_record.get('milestone_5pct_notified'):
@@ -1945,37 +1950,37 @@ def main():
                         except Exception as e:
                             logging.debug(f"Milestone notification failed: {e}")
                 
-                # SCALPING STRATEGY: Close immediately at tier1 profit % (default 7%)
-                tier1_profit_pct = CONFIG.get('smart_profit_tier1_pct', 7)
-                if is_scalping_trade and pnl_percent >= tier1_profit_pct:
-                    should_take_profit = True
-                    profit_reason = f"Scalping target reached ({pnl_percent:.1f}%) - closing immediately"
-                    add_event(f"🎯 Scalping trade {asset}: Reached {tier1_profit_pct}% target ({pnl_percent:.1f}%), closing immediately")
-                
-                # TREND STRATEGY: Use higher thresholds, let indicators guide exits
-                elif not is_scalping_trade:
-                    if pnl_percent >= 15.0:  # Up 15%+ - take profits immediately
+                if agent_manage_exits:
+                    # SCALPING STRATEGY: Close immediately at tier1 profit % (default 7%)
+                    if is_scalping_trade and pnl_percent >= tier1_profit_pct:
                         should_take_profit = True
-                        profit_reason = "Strong profit (15%+) - locking in gains"
-                    elif pnl_percent >= 10.0:  # Up 10-15% - take profits if TP too high
-                        # Check if TP is more than 20% away - if so, take profit now
-                        if tp_price:
-                            tp_percent = 0.0
-                            try:
-                                tp_price_float = float(tp_price) if tp_price else None
-                                entry_price_float = float(entry_price) if entry_price else None
-                                if tp_price_float and entry_price_float:
-                                    if is_long:
-                                        tp_percent = ((tp_price_float - entry_price_float) / entry_price_float) * 100
-                                    else:
-                                        tp_percent = ((entry_price_float - tp_price_float) / entry_price_float) * 100
-                            except (ValueError, TypeError) as e:
-                                logging.debug(f"Could not calculate TP percent for {asset} (trend check): tp_price={tp_price}, entry_price={entry_price}, error={e}")
+                        profit_reason = f"Scalping target reached ({pnl_percent:.1f}%) - closing immediately"
+                        add_event(f"🎯 Scalping trade {asset}: Reached {tier1_profit_pct}% target ({pnl_percent:.1f}%), closing immediately")
+                    
+                    # TREND STRATEGY: Use higher thresholds, let indicators guide exits
+                    elif not is_scalping_trade:
+                        if pnl_percent >= 15.0:  # Up 15%+ - take profits immediately
+                            should_take_profit = True
+                            profit_reason = "Strong profit (15%+) - locking in gains"
+                        elif pnl_percent >= 10.0:  # Up 10-15% - take profits if TP too high
+                            # Check if TP is more than 20% away - if so, take profit now
+                            if tp_price:
                                 tp_percent = 0.0
-                            
-                            if tp_percent > 20.0:  # TP is more than 20% away
-                                should_take_profit = True
-                                profit_reason = f"Profit at {pnl_percent:.1f}% - TP too high ({tp_percent:.1f}%), taking profit"
+                                try:
+                                    tp_price_float = float(tp_price) if tp_price else None
+                                    entry_price_float = float(entry_price) if entry_price else None
+                                    if tp_price_float and entry_price_float:
+                                        if is_long:
+                                            tp_percent = ((tp_price_float - entry_price_float) / entry_price_float) * 100
+                                        else:
+                                            tp_percent = ((entry_price_float - tp_price_float) / entry_price_float) * 100
+                                except (ValueError, TypeError) as e:
+                                    logging.debug(f"Could not calculate TP percent for {asset} (trend check): tp_price={tp_price}, entry_price={entry_price}, error={e}")
+                                    tp_percent = 0.0
+                                
+                                if tp_percent > 20.0:  # TP is more than 20% away
+                                    should_take_profit = True
+                                    profit_reason = f"Profit at {pnl_percent:.1f}% - TP too high ({tp_percent:.1f}%), taking profit"
                 
                 # Check TP/SL conditions
                 tp_hit = False
@@ -1990,7 +1995,7 @@ def main():
                 effective_sl_percent = scalping_sl_percent if is_scalping else sl_percent
                 
                 # Check if strict TP enforcement is enabled
-                if take_profit_strict_enforcement and pnl_percent is not None:
+                if agent_manage_exits and take_profit_strict_enforcement and pnl_percent is not None:
                     # Strict TP: Close immediately when TP% is reached
                     if pnl_percent >= effective_tp_percent:
                         tp_hit = True
@@ -2017,7 +2022,7 @@ def main():
                 if tp_hit or sl_hit:
                     should_take_profit = True
                     profit_reason = "TP" if tp_hit else "SL"
-                elif not tp_price and not sl_price and not take_profit_strict_enforcement:
+                elif agent_manage_exits and not tp_price and not sl_price and not take_profit_strict_enforcement:
                     # No TP/SL found, but if up significantly, take profit (only if strict TP is not enabled)
                     if pnl_percent >= 10.0:
                         should_take_profit = True
@@ -2179,6 +2184,9 @@ def main():
                             
                             # If closing/flipping, execute immediately when AI decides - no premature checks
                             if is_closing:
+                                if not agent_manage_exits:
+                                    add_event(f"⏸️  EXIT BLOCKED for {asset}: AGENT_MANAGE_EXITS=false (TP/SL-only close mode)")
+                                    continue
                                 # Calculate price movement for logging
                                 price_move_pct = abs((current_price - entry_price) / entry_price * 100) if entry_price and entry_price > 0 else 0
                                 
@@ -2264,7 +2272,7 @@ def main():
                         
                         if alloc_usd <= 0:
                             # If LLM signals 'sell' with zero allocation but we have a position, close it reduce-only
-                            if not is_buy:
+                            if not is_buy and agent_manage_exits:
                                 # Check if position exists
                                 state_check = await hyperliquid.get_user_state()
                                 close_size = 0.0
@@ -2298,6 +2306,8 @@ def main():
                                     except Exception as e:
                                         add_event(f"❌ Failed to close {asset} on LLM signal: {e}")
                                     continue
+                            elif not is_buy and not agent_manage_exits:
+                                add_event(f"⏸️  EXIT BLOCKED for {asset}: zero-allocation close ignored (AGENT_MANAGE_EXITS=false)")
                             add_event(f"Holding {asset}: zero/negative allocation")
                             continue
                         
@@ -3962,6 +3972,68 @@ def main():
             logging.error(traceback.format_exc())
             return web.json_response({"error": str(e)}, status=500)
 
+    async def handle_position_protection(request):
+        """Set/replace TP/SL protection orders for an existing position."""
+        try:
+            payload = await request.json()
+            asset_raw = payload.get("asset") or payload.get("symbol")
+            if not asset_raw:
+                return web.json_response({"error": "asset (or symbol) is required"}, status=400)
+
+            asset = str(asset_raw).upper().replace("/USDT", "").replace("USDT", "")
+            tp_price = payload.get("tp_price")
+            sl_price = payload.get("sl_price")
+
+            # Allow either TP or SL update; null/empty means "clear that side".
+            tp_price = float(tp_price) if tp_price not in (None, "") else None
+            sl_price = float(sl_price) if sl_price not in (None, "") else None
+
+            # Confirm an open position exists and detect side/size.
+            state = await hyperliquid.get_user_state()
+            position_size = 0.0
+            is_long = True
+            for p in state.get("positions", []):
+                sym = p.get("coin") or p.get("symbol")
+                if str(sym).upper().replace("/USDT", "").replace("USDT", "") != asset:
+                    continue
+                raw = float(p.get("szi") or p.get("quantity") or p.get("positionAmt") or 0)
+                if abs(raw) > 0:
+                    position_size = abs(raw)
+                    is_long = raw > 0
+                    break
+
+            if position_size <= 0:
+                return web.json_response({"error": f"No open position found for {asset}"}, status=404)
+
+            # Replace protection: clear old conditional orders first.
+            await _safe_cancel_all_orders(asset, "manual TP/SL update")
+
+            # Recreate requested protection orders.
+            result = await _ensure_protective_orders(
+                asset=asset,
+                is_long=is_long,
+                position_size=position_size,
+                tp_price=tp_price,
+                sl_price=sl_price,
+                trading_settings=await get_trading_settings(),
+            )
+
+            return web.json_response({
+                "success": True,
+                "asset": asset,
+                "position_size": position_size,
+                "side": "long" if is_long else "short",
+                "tp_price": result.get("tp_price"),
+                "sl_price": result.get("sl_price"),
+                "tp_oid": result.get("tp_oid"),
+                "sl_oid": result.get("sl_oid"),
+            })
+        except Exception as e:
+            logging.error(f"Error updating position protection: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
+            return web.json_response({"error": str(e)}, status=500)
+
     async def start_api(app):
         """Register HTTP endpoints for observing diary entries, logs, positions, and status."""
         app.router.add_get('/diary', handle_diary)
@@ -3977,6 +4049,7 @@ def main():
         app.router.add_get('/api/trades', handle_trades)  # Add trades endpoint
         app.router.add_post('/api/test', handle_status)  # Alias for compatibility
         app.router.add_post('/api/alert/signal', handle_alert_signal)
+        app.router.add_post('/api/position-protection', handle_position_protection)
 
     def suppress_connection_errors():
         """Suppress harmless Windows socket connection errors that occur during rapid connection closures."""

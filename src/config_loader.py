@@ -105,7 +105,8 @@ CONFIG = {
     "default_leverage": _get_int("DEFAULT_LEVERAGE", 10),  # Default leverage (will be capped by asset max)
     "take_profit_percent": _get_int("TAKE_PROFIT_PERCENT", 5),  # Take profit percentage (e.g., 5 = 5%)
     "stop_loss_percent": _get_int("STOP_LOSS_PERCENT", 8),  # Stop loss percentage - 8% for scalping (was 3%)
-    "enable_stop_loss_orders": _get_bool("ENABLE_STOP_LOSS_ORDERS", False),  # Disabled by default - prevents Binance API errors
+    "enable_stop_loss_orders": _get_bool("ENABLE_STOP_LOSS_ORDERS", True),  # Recommended ON: creates exchange-native SL protection orders
+    "agent_manage_exits": _get_bool("AGENT_MANAGE_EXITS", True),  # If false, disables agent-driven exits (TP/SL-only close mode)
     # Smart profit taking (scalping mode)
     "enable_smart_profit": _get_bool("ENABLE_SMART_PROFIT", True),
     "smart_profit_tier1_pct": _get_int("SMART_PROFIT_TIER1_PCT", 7),  # Close 70% at 7%
