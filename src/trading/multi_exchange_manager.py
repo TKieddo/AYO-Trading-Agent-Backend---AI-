@@ -160,19 +160,20 @@ class MultiExchangeManager:
                 self.asset_to_exchange[asset_upper] = "ig"
                 continue
 
-            # Crypto: prefer futures venues, fall back to Alpaca/IG
+            # Crypto: prefer the configured EXCHANGE, then other futures venues, then Alpaca/IG
             if asset_upper in crypto_set or asset_upper not in stock_set:
-                if "aster" in self.exchanges:
-                    self.asset_to_exchange[asset_upper] = "aster"
-                elif "binance" in self.exchanges:
-                    self.asset_to_exchange[asset_upper] = "binance"
-                elif "okx" in self.exchanges:
-                    self.asset_to_exchange[asset_upper] = "okx"
-                elif "alpaca" in self.exchanges:
-                    self.asset_to_exchange[asset_upper] = "alpaca"
-                elif "ig" in self.exchanges:
-                    self.asset_to_exchange[asset_upper] = "ig"
-                else:
+                preferred = str(CONFIG.get("exchange") or "").lower()
+                crypto_order = []
+                for name in (preferred, "okx", "binance", "aster", "alpaca", "ig"):
+                    if name and name not in crypto_order:
+                        crypto_order.append(name)
+                routed = False
+                for name in crypto_order:
+                    if name in self.exchanges:
+                        self.asset_to_exchange[asset_upper] = name
+                        routed = True
+                        break
+                if not routed:
                     logging.warning(f"⚠️  No exchange available for {asset_upper}")
                 continue
 
@@ -310,6 +311,25 @@ class MultiExchangeManager:
         
         return all_balances
     
+    async def get_merged_user_state(self) -> Dict[str, Any]:
+        """Combine balances and positions from every live exchange into one state dict."""
+        positions: List[Dict[str, Any]] = []
+        balance = 0.0
+        total_value = 0.0
+        for exchange_name, exchange in self.exchanges.items():
+            try:
+                state = await exchange.get_user_state()
+                balance += float(state.get("balance") or 0)
+                total_value += float(state.get("total_value") or state.get("balance") or 0)
+                for pos in state.get("positions") or []:
+                    pos = dict(pos)
+                    pos["exchange"] = exchange_name
+                    pos["exchange_type"] = self.exchange_configs.get(exchange_name, {}).get("type")
+                    positions.append(pos)
+            except Exception as e:
+                logging.error(f"Error merging state from {exchange_name}: {e}")
+        return {"balance": balance, "total_value": total_value, "positions": positions}
+
     def get_exchanges_by_type(self, exchange_type: str) -> Dict[str, Any]:
         """Get all exchanges of a specific type.
         

@@ -30,6 +30,7 @@ from src.utils.trading_settings import get_trading_settings, get_max_leverage_fo
 from src.utils.volatility_stops import ExitPlan, build_exit_plan
 from src.utils import reentry_guard, profit_ladder, risk_governor
 from src.utils.trend_filter import check_trend_agreement
+from src.utils.forex_session import is_forex_session_open, looks_like_forex as _looks_like_forex
 
 load_dotenv()
 
@@ -188,22 +189,35 @@ def main():
     taapi = TechnicalAnalysisClient()
     exchange_name = CONFIG.get("exchange", "aster").lower()
     
-    # Check if multi-exchange mode is enabled
-    use_multi_exchange = CONFIG.get("MULTI_EXCHANGE_MODE", "false").lower() == "true"
-    
+    # Multi-exchange: explicit flag, or auto when IG + a crypto venue + FOREX_ASSETS are all set
+    use_multi_exchange = str(CONFIG.get("MULTI_EXCHANGE_MODE", "false")).lower() == "true"
+    if not use_multi_exchange:
+        _has_ig = bool(CONFIG.get("ig_api_key") and CONFIG.get("ig_username") and CONFIG.get("ig_password"))
+        _has_crypto = bool(
+            (CONFIG.get("okx_api_key") and CONFIG.get("okx_api_secret") and CONFIG.get("okx_passphrase"))
+            or (CONFIG.get("binance_api_key") and CONFIG.get("binance_api_secret"))
+            or (CONFIG.get("aster_user_address") and CONFIG.get("aster_private_key"))
+        )
+        _has_fx = bool(str(CONFIG.get("forex_assets") or "").strip())
+        if _has_ig and _has_crypto and _has_fx:
+            use_multi_exchange = True
+            logging.info("🌐 Auto-enabled multi-exchange (crypto venue + IG forex credentials detected)")
+
     if use_multi_exchange:
         # Multi-exchange mode: trade on multiple exchanges simultaneously
         from src.trading.multi_exchange_manager import MultiExchangeManager
         exchange_manager = MultiExchangeManager()
         logging.info("🌐 Multi-exchange mode enabled - trading on multiple exchanges simultaneously")
         
-        # For backward compatibility, set a primary exchange
-        # Use the first available exchange as primary
-        primary_exchange_name = exchange_manager.list_exchanges()[0] if exchange_manager.list_exchanges() else None
+        # Prefer the configured primary exchange (usually OKX) over insertion order
+        preferred = (CONFIG.get("exchange") or "").lower()
+        available = exchange_manager.list_exchanges()
+        primary_exchange_name = preferred if preferred in available else (available[0] if available else None)
         if primary_exchange_name:
             exchange = exchange_manager.exchanges[primary_exchange_name]
             hyperliquid = exchange  # Backward compatibility
             logging.info(f"📌 Primary exchange (for compatibility): {primary_exchange_name}")
+            logging.info(f"📌 Asset routing: {exchange_manager.asset_to_exchange}")
         else:
             raise ValueError("No exchanges available in multi-exchange mode")
     else:
@@ -825,28 +839,67 @@ def main():
         
         return f"{base_note}{margin_instruction}"
 
+    def _ex_for(asset: str):
+        """Return the exchange that should handle this asset (IG for forex, OKX for crypto)."""
+        if use_multi_exchange and exchange_manager:
+            return exchange_manager.get_exchange_for_asset(asset) or hyperliquid
+        return hyperliquid
+
+    def _settings_for_asset(asset: str, base_settings: dict) -> dict:
+        """Overlay forex-specific risk/exit knobs when the asset is a currency pair."""
+        settings = dict(base_settings or {})
+        if not _looks_like_forex(asset):
+            return settings
+        if CONFIG.get("forex_interval"):
+            settings["interval"] = CONFIG.get("forex_interval")
+            settings["intraday_timeframe"] = CONFIG.get("forex_interval")
+        if CONFIG.get("forex_exit_mode"):
+            settings["exit_mode"] = CONFIG.get("forex_exit_mode")
+        if CONFIG.get("forex_sl_atr_mult") is not None:
+            settings["sl_atr_mult"] = CONFIG.get("forex_sl_atr_mult")
+        if CONFIG.get("forex_tp_rr_ratio") is not None:
+            settings["tp_rr_ratio"] = CONFIG.get("forex_tp_rr_ratio")
+        if CONFIG.get("forex_risk_per_trade_usd") is not None:
+            settings["risk_per_trade_usd"] = CONFIG.get("forex_risk_per_trade_usd")
+        if CONFIG.get("forex_leverage"):
+            settings["leverage"] = CONFIG.get("forex_leverage")
+        return settings
+
+    def _section_has_usable_ta(section: dict) -> bool:
+        """True when at least one core indicator arrived — empty series means no LLM entry edge."""
+        if not section:
+            return False
+        if section.get("current_price") in (None, 0, 0.0):
+            return False
+        intra = section.get("intraday") or {}
+        return any(intra.get(k) is not None for k in ("ema20", "rsi14", "macd"))
+
     def _has_required_ta_data(asset: str) -> bool:
         """Validate that key TA inputs exist before adding hunted asset to decision universe."""
         try:
+            if _looks_like_forex(asset):
+                symbol = asset if "/" in asset else f"{asset[:3]}/{asset[3:6]}"
+                tf = CONFIG.get("forex_interval") or CONFIG.get("intraday_timeframe") or "15m"
+            else:
+                symbol = f"{asset}/USDT"
+                tf = CONFIG.get("intraday_timeframe") or CONFIG.get("interval") or "15m"
+            longterm_tf = CONFIG.get("longterm_timeframe") or "4h"
             intraday_probe = taapi.fetch_series(
-                "ema",
-                f"{asset}/USDT",
-                "5m",
-                results=1,
-                params={"period": 20},
-                value_key="value",
+                "ema", symbol, tf, results=1, params={"period": 20}, value_key="value",
             )
             longterm_probe = taapi.fetch_series(
-                "ema",
-                f"{asset}/USDT",
-                "4h",
-                results=1,
-                params={"period": 20},
-                value_key="value",
+                "ema", symbol, longterm_tf, results=1, params={"period": 20}, value_key="value",
             )
             return bool(intraday_probe) and bool(longterm_probe)
         except Exception:
             return False
+
+    def _ta_symbol(asset: str) -> str:
+        """TA feed symbol: EUR/USD for forex, BTC/USDT for crypto."""
+        if _looks_like_forex(asset):
+            a = asset.replace("/", "").replace("_", "").upper()
+            return f"{a[:3]}/{a[3:6]}"
+        return f"{asset}/USDT"
 
     def _fetch_atr_percent(asset: str, interval: str, current_price: float, period: int = 14):
         """ATR for `asset` on `interval`, as a percentage of price. None if unavailable."""
@@ -854,7 +907,7 @@ def main():
             return None
         try:
             atr_value = taapi.fetch_value(
-                "atr", f"{asset}/USDT", interval, params={"period": period}, key="value"
+                "atr", _ta_symbol(asset), interval, params={"period": period}, key="value"
             )
         except Exception as e:
             logging.debug(f"ATR fetch failed for {asset} {interval}: {e}")
@@ -931,14 +984,15 @@ def main():
             add_event(f"⚠️  Skip close for {asset}: zero size ({reason})")
             return False
         try:
+            ex = _ex_for(asset)
             close_action = "sell" if is_long else "buy"
             if is_long:
-                await hyperliquid.place_sell_order(asset, size, reduce_only=True)
+                await ex.place_sell_order(asset, size, reduce_only=True)
             else:
-                await hyperliquid.place_buy_order(asset, size, reduce_only=True)
+                await ex.place_buy_order(asset, size, reduce_only=True)
             add_event(f"✅ Closed {asset} ({reason}) via {close_action} reduce-only | size={size}")
             try:
-                await hyperliquid.cancel_all_orders(asset)
+                await ex.cancel_all_orders(asset)
                 add_event(f"🧹 Cancelled all open orders for {asset} (post-close {reason})")
             except Exception as e:
                 add_event(f"⚠️  Could not cancel open orders for {asset} (post-close {reason}): {e}")
@@ -950,7 +1004,7 @@ def main():
             exit_px = current_price
             if exit_px is None:
                 try:
-                    exit_px = await hyperliquid.get_current_price(asset)
+                    exit_px = await ex.get_current_price(asset)
                 except Exception:
                     exit_px = None
 
@@ -1004,7 +1058,10 @@ def main():
             minutes_since_start = (datetime.now(timezone.utc) - start_time).total_seconds() / 60
 
             # Global account state
-            state = await hyperliquid.get_user_state()
+            if use_multi_exchange and exchange_manager:
+                state = await exchange_manager.get_merged_user_state()
+            else:
+                state = await hyperliquid.get_user_state()
             total_value = state.get('total_value') or state['balance'] + sum(p.get('pnl', 0) for p in state['positions'])
             sharpe = calculate_sharpe(trade_log)
 
@@ -1275,8 +1332,8 @@ def main():
                                     await _record_pair_hunter_data_success(hunted_asset)
                                     validated_hunts.append(hunted_asset)
                                 else:
-                                    await _record_pair_hunter_data_failure(hunted_asset, "missing 5m/4h TA data")
-                                    add_event(f"⚠️ Pair Hunter dropped {hunted_asset}: missing 5m/4h TA data on Binance")
+                                    await _record_pair_hunter_data_failure(hunted_asset, "missing TA candles")
+                                    add_event(f"⚠️ Pair Hunter dropped {hunted_asset}: missing TA candles")
                             hunted_assets = validated_hunts
                         run_loop._last_hunted_assets = hunted_assets
                         run_loop._pair_hunter_counter = 0
@@ -1312,6 +1369,34 @@ def main():
                     decision_assets = list(args.assets)
                     add_event("⚠️ Pair Hunter yielded no symbols, using ASSETS fallback.")
 
+            # Always include configured forex pairs when IG is live; skip them while FX is closed.
+            forex_assets = []
+            raw_fx = CONFIG.get("forex_assets") or ""
+            if raw_fx:
+                forex_assets = [a.strip().upper() for a in str(raw_fx).replace(",", " ").split() if a.strip()]
+            if forex_assets and use_multi_exchange and exchange_manager and "ig" in exchange_manager.exchanges:
+                if is_forex_session_open():
+                    for fx in forex_assets:
+                        if fx not in decision_assets:
+                            decision_assets.append(fx)
+                    add_event(f"💱 Forex session OPEN — watching: {', '.join(forex_assets)}")
+                else:
+                    # Drop flat FX pairs, but keep any open IG positions for mechanical exits.
+                    open_fx = {
+                        (p.get("symbol") or p.get("coin") or "").upper()
+                        for p in positions
+                        if _looks_like_forex(p.get("symbol") or p.get("coin") or "")
+                    }
+                    decision_assets = [
+                        a for a in decision_assets
+                        if (not _looks_like_forex(a)) or a.upper() in open_fx
+                    ]
+                    add_event(
+                        "💱 Forex session CLOSED (Fri 22:00–Sun 22:00 UTC) — "
+                        f"skipping new FX entries"
+                        + (f"; still managing open: {', '.join(sorted(open_fx))}" if open_fx else "")
+                    )
+
             dashboard = {
                 "total_return_pct": round(total_return_pct, 2),
                 "balance": round_or_none(state['balance'], 2),
@@ -1328,38 +1413,59 @@ def main():
                 }
             }
 
+            # Fetch trading settings BEFORE market data — the gather loop needs the
+            # configured timeframes, and a NameError here previously emptied market_data.
+            trading_settings = await get_trading_settings()
+            _LIVE_SETTINGS.clear()
+            _LIVE_SETTINGS.update(trading_settings)
+            _LAST_KNOWN_EQUITY["value"] = float(account_value or 0.0) or _LAST_KNOWN_EQUITY.get("value")
+            default_leverage = trading_settings["leverage"]
+
             # Gather data for ALL assets first
             market_sections = []
             asset_prices = {}
             for asset in decision_assets:
                 try:
-                    current_price = await hyperliquid.get_current_price(asset)
+                    asset_exchange = _ex_for(asset)
+                    current_price = await asset_exchange.get_current_price(asset)
                     asset_prices[asset] = current_price
                     if asset not in price_history:
                         price_history[asset] = deque(maxlen=60)
                     price_history[asset].append({"t": datetime.now(timezone.utc).isoformat(), "mid": round_or_none(current_price, 2)})
-                    oi = await hyperliquid.get_open_interest(asset)
-                    funding = await hyperliquid.get_funding_rate(asset)
 
-                    intraday_tf = trading_settings.get("intraday_timeframe") or CONFIG.get("intraday_timeframe", "15m")
-                    longterm_tf = trading_settings.get("longterm_timeframe") or CONFIG.get("longterm_timeframe", "4h")
-                    ema_series = taapi.fetch_series("ema", f"{asset}/USDT", intraday_tf, results=10, params={"period": 20}, value_key="value")
-                    macd_series = taapi.fetch_series("macd", f"{asset}/USDT", intraday_tf, results=10, value_key="valueMACD")
-                    rsi7_series = taapi.fetch_series("rsi", f"{asset}/USDT", intraday_tf, results=10, params={"period": 7}, value_key="value")
-                    rsi14_series = taapi.fetch_series("rsi", f"{asset}/USDT", intraday_tf, results=10, params={"period": 14}, value_key="value")
+                    is_fx = _looks_like_forex(asset)
+                    if is_fx:
+                        oi = None
+                        funding = None
+                        ta_symbol = asset if "/" in asset else f"{asset[:3]}/{asset[3:6]}"
+                        asset_settings = _settings_for_asset(asset, trading_settings)
+                        intraday_tf = asset_settings.get("intraday_timeframe") or CONFIG.get("forex_interval") or "15m"
+                        longterm_tf = asset_settings.get("longterm_timeframe") or CONFIG.get("longterm_timeframe") or "4h"
+                    else:
+                        oi = await asset_exchange.get_open_interest(asset) if hasattr(asset_exchange, "get_open_interest") else None
+                        funding = await asset_exchange.get_funding_rate(asset) if hasattr(asset_exchange, "get_funding_rate") else None
+                        ta_symbol = f"{asset}/USDT"
+                        intraday_tf = trading_settings.get("intraday_timeframe") or CONFIG.get("intraday_timeframe", "15m")
+                        longterm_tf = trading_settings.get("longterm_timeframe") or CONFIG.get("longterm_timeframe", "4h")
 
-                    lt_ema20 = taapi.fetch_value("ema", f"{asset}/USDT", longterm_tf, params={"period": 20}, key="value")
-                    lt_ema50 = taapi.fetch_value("ema", f"{asset}/USDT", longterm_tf, params={"period": 50}, key="value")
-                    lt_atr3 = taapi.fetch_value("atr", f"{asset}/USDT", longterm_tf, params={"period": 3}, key="value")
-                    lt_atr14 = taapi.fetch_value("atr", f"{asset}/USDT", longterm_tf, params={"period": 14}, key="value")
-                    lt_macd_series = taapi.fetch_series("macd", f"{asset}/USDT", longterm_tf, results=10, value_key="valueMACD")
-                    lt_rsi_series = taapi.fetch_series("rsi", f"{asset}/USDT", longterm_tf, results=10, params={"period": 14}, value_key="value")
+                    ema_series = taapi.fetch_series("ema", ta_symbol, intraday_tf, results=10, params={"period": 20}, value_key="value")
+                    macd_series = taapi.fetch_series("macd", ta_symbol, intraday_tf, results=10, value_key="valueMACD")
+                    rsi7_series = taapi.fetch_series("rsi", ta_symbol, intraday_tf, results=10, params={"period": 7}, value_key="value")
+                    rsi14_series = taapi.fetch_series("rsi", ta_symbol, intraday_tf, results=10, params={"period": 14}, value_key="value")
+
+                    lt_ema20 = taapi.fetch_value("ema", ta_symbol, longterm_tf, params={"period": 20}, key="value")
+                    lt_ema50 = taapi.fetch_value("ema", ta_symbol, longterm_tf, params={"period": 50}, key="value")
+                    lt_atr3 = taapi.fetch_value("atr", ta_symbol, longterm_tf, params={"period": 3}, key="value")
+                    lt_atr14 = taapi.fetch_value("atr", ta_symbol, longterm_tf, params={"period": 14}, key="value")
+                    lt_macd_series = taapi.fetch_series("macd", ta_symbol, longterm_tf, results=10, value_key="valueMACD")
+                    lt_rsi_series = taapi.fetch_series("rsi", ta_symbol, longterm_tf, results=10, params={"period": 14}, value_key="value")
 
                     recent_mids = [entry["mid"] for entry in list(price_history.get(asset, []))[-10:]]
                     funding_annualized = round(funding * 24 * 365 * 100, 2) if funding else None
 
                     market_sections.append({
                         "asset": asset,
+                        "venue": "ig" if is_fx else (CONFIG.get("exchange") or "okx"),
                         "current_price": round_or_none(current_price, 2),
                         "intraday": {
                             "ema20": round_or_none(ema_series[-1], 2) if ema_series else None,
@@ -1397,14 +1503,6 @@ def main():
                     assets_with_positions_set.add(pos.get('symbol'))
             
             flat_assets = [a for a in decision_assets if a not in assets_with_positions_set]
-
-            # Fetch trading settings (leverage, TP%, SL%, position sizing)
-            # This will use database settings first, then fall back to .env file if database unavailable
-            trading_settings = await get_trading_settings()
-            _LIVE_SETTINGS.clear()
-            _LIVE_SETTINGS.update(trading_settings)
-            _LAST_KNOWN_EQUITY["value"] = float(account_value or 0.0) or _LAST_KNOWN_EQUITY.get("value")
-            default_leverage = trading_settings["leverage"]
             tp_percent = trading_settings["take_profit_percent"]
             sl_percent = trading_settings["stop_loss_percent"]
             scalping_tp_percent = trading_settings.get("scalping_tp_percent", 5.0)
@@ -1532,45 +1630,27 @@ def main():
                 
                 try:
                     add_event(f"🛑 FORCE CLOSING {asset} due to stop loss: {reason}")
-                    close_action = "sell" if is_long else "buy"
-                    if is_long:
-                        close_order = await hyperliquid.place_sell_order(asset, position_size, reduce_only=True)
-                    else:
-                        close_order = await hyperliquid.place_buy_order(asset, position_size, reduce_only=True)
-                    add_event(f"✅ Force closed {asset} position (Stop Loss) via {close_action} order - Loss: {pnl_percent:.2f}% (${pnl_usd:.2f})")
-                    await _safe_cancel_all_orders(asset, "post-close stop-loss cleanup")
-                    
-                    # Remove from active trades
-                    for tr in active_trades[:]:
-                        if tr.get('asset') == asset:
-                            active_trades.remove(tr)
-                    
-                    # Log to diary
-                    with open(diary_path, "a") as f:
-                        f.write(json.dumps({
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "asset": asset,
-                            "action": "close_stop_loss",
-                            "entry_price": entry_price,
-                            "exit_price": current_price,
-                            "amount": position_size,
-                            "reason": reason,
-                            "pnl": pnl_usd,
-                            "pnl_percent": pnl_percent
-                        }) + "\n")
-                    await _record_pair_hunter_outcome(asset, pnl_usd, pnl_percent, "close_stop_loss", was_long=is_long)
-                    
-                    # Remove from positions list so AI doesn't see it
-                    positions = [p for p in positions if p.get('symbol') != asset]
+                    closed = await _close_position_reduce_only(
+                        asset, is_long, position_size, reason,
+                        entry_price=entry_price, current_price=current_price,
+                        pnl_usd=pnl_usd, pnl_percent=pnl_percent,
+                        diary_action="close_stop_loss",
+                    )
+                    if closed:
+                        add_event(f"✅ Force closed {asset} position (Stop Loss) - Loss: {pnl_percent:.2f}% (${pnl_usd:.2f})")
+                        positions = [p for p in positions if p.get('symbol') != asset]
                 except Exception as e:
                     add_event(f"❌ Failed to force close {asset} position (Stop Loss): {e}")
                     import traceback
                     logging.error(f"Stop loss closure error: {traceback.format_exc()}")
 
             # Build per-asset leverage map for context and enforcement
+            # Forex defaults to FOREX_LEVERAGE / IG_LEVERAGE instead of crypto DEFAULT_LEVERAGE.
             per_asset_leverage = {}
             for asset in decision_assets:
-                asset_leverage = get_leverage_for_asset(asset, default_leverage)
+                asset_defaults = _settings_for_asset(asset, trading_settings)
+                base_lev = int(asset_defaults.get("leverage") or default_leverage)
+                asset_leverage = get_leverage_for_asset(asset, base_lev)
                 per_asset_leverage[asset] = asset_leverage
                 if asset_leverage != default_leverage:
                     add_event(f"📌 Per-asset leverage for {asset}: {asset_leverage}x (default: {default_leverage}x)")
@@ -1730,57 +1810,69 @@ def main():
             if enable_pair_hunter:
                 hunted_snapshot = list(getattr(run_loop, "_last_hunted_assets", []))
                 add_event(f"🔎 Pair Hunter cached symbols ({len(hunted_snapshot)}): {', '.join(hunted_snapshot) if hunted_snapshot else 'none'}")
-            add_event(f"🧠 LLM analyzing {len(decision_assets)} assets this cycle: {', '.join(decision_assets)}")
-            
-            # ═════════════════════════════════════════════════════════════════
-            # Track current strategy name for change detection (both AUTO and MANUAL)
-            # ═════════════════════════════════════════════════════════════════
-            current_strategy_name = agent.get_name()
-            if not hasattr(run_loop, '_last_strategy_name'):
-                run_loop._last_strategy_name = None
-            
-            # Log which strategy is being used for this cycle
-            if strategy_mode == "MANUAL":
-                if not hasattr(run_loop, '_last_strategy_log') or run_loop._last_strategy_log != invocation_count:
-                    logging.info(f"📊 Using strategy: {current_strategy_name}")
-                    run_loop._last_strategy_log = invocation_count
-            elif strategy_mode == "AUTO":
-                # For auto mode, log when strategy changes
-                if run_loop._last_strategy_name and run_loop._last_strategy_name != current_strategy_name:
-                    logging.warning(f"🔄 Strategy changed: {run_loop._last_strategy_name} → {current_strategy_name}")
-            
-            # Update last strategy name
-            run_loop._last_strategy_name = current_strategy_name
+            # Skip DeepSeek when every flat asset lacks indicators. Mechanical exits already
+            # ran above this point, so open positions stay protected without an LLM call.
+            skip_llm = bool(CONFIG.get("skip_llm_without_market_data", True))
+            sections_by_asset = {s.get("asset"): s for s in market_sections}
+            usable_flat = [
+                a for a in flat_assets
+                if _section_has_usable_ta(sections_by_asset.get(a))
+            ]
+            # Agent-managed exits still need the model when it is allowed to close positions.
+            needs_agent_exit_review = bool(agent_manage_exits and assets_with_positions_set)
+            will_call_llm = not (skip_llm and not usable_flat and not needs_agent_exit_review)
+            if will_call_llm:
+                add_event(f"🧠 LLM analyzing {len(decision_assets)} assets this cycle: {', '.join(decision_assets)}")
+            if skip_llm and not usable_flat and not needs_agent_exit_review:
+                missing = [a for a in flat_assets if a not in sections_by_asset or not _section_has_usable_ta(sections_by_asset.get(a))]
+                add_event(
+                    f"💤 Skipping DeepSeek this cycle — no usable market data for flat assets"
+                    f"{(' (' + ', '.join(missing) + ')') if missing else ''}. "
+                    f"Mechanical TP/SL still active."
+                )
+                outputs = {a: {"action": "hold", "allocation_usd": 0, "rationale": "no usable market data"} for a in decision_assets}
+            else:
+                current_strategy_name = agent.get_name()
+                if not hasattr(run_loop, '_last_strategy_name'):
+                    run_loop._last_strategy_name = None
+                if strategy_mode == "MANUAL":
+                    if not hasattr(run_loop, '_last_strategy_log') or run_loop._last_strategy_log != invocation_count:
+                        logging.info(f"📊 Using strategy: {current_strategy_name}")
+                        run_loop._last_strategy_log = invocation_count
+                elif strategy_mode == "AUTO":
+                    if run_loop._last_strategy_name and run_loop._last_strategy_name != current_strategy_name:
+                        logging.warning(f"🔄 Strategy changed: {run_loop._last_strategy_name} → {current_strategy_name}")
+                run_loop._last_strategy_name = current_strategy_name
 
-            try:
-                outputs = agent.decide_trade(decision_assets, context)
-                if not isinstance(outputs, dict):
-                    add_event(f"Invalid output format (expected dict): {outputs}")
-                    outputs = {}
-            except Exception as e:
-                import traceback
-                add_event(f"Agent error: {e}")
-                add_event(f"Traceback: {traceback.format_exc()}")
-                outputs = {}
-
-            # Retry once on failure/parse error with a stricter instruction prefix
-            if _is_failed_outputs(outputs):
-                add_event("Retrying LLM once due to invalid/parse-error output")
-                context_retry_payload = OrderedDict([
-                    ("retry_instruction", "Return ONLY the JSON array per schema with no prose."),
-                    ("original_context", context_payload)
-                ])
-                context_retry = json.dumps(context_retry_payload, default=json_default)
                 try:
-                    outputs = agent.decide_trade(decision_assets, context_retry)
+                    outputs = agent.decide_trade(decision_assets, context)
                     if not isinstance(outputs, dict):
-                        add_event(f"Retry invalid format: {outputs}")
+                        add_event(f"Invalid output format (expected dict): {outputs}")
                         outputs = {}
                 except Exception as e:
                     import traceback
-                    add_event(f"Retry agent error: {e}")
-                    add_event(f"Retry traceback: {traceback.format_exc()}")
+                    add_event(f"Agent error: {e}")
+                    add_event(f"Traceback: {traceback.format_exc()}")
                     outputs = {}
+
+                # Retry once on failure/parse error with a stricter instruction prefix
+                if _is_failed_outputs(outputs):
+                    add_event("Retrying LLM once due to invalid/parse-error output")
+                    context_retry_payload = OrderedDict([
+                        ("retry_instruction", "Return ONLY the JSON array per schema with no prose."),
+                        ("original_context", context_payload)
+                    ])
+                    context_retry = json.dumps(context_retry_payload, default=json_default)
+                    try:
+                        outputs = agent.decide_trade(decision_assets, context_retry)
+                        if not isinstance(outputs, dict):
+                            add_event(f"Retry invalid format: {outputs}")
+                            outputs = {}
+                    except Exception as e:
+                        import traceback
+                        add_event(f"Retry agent error: {e}")
+                        add_event(f"Retry traceback: {traceback.format_exc()}")
+                        outputs = {}
 
             reasoning_text = outputs.get("reasoning", "") if isinstance(outputs, dict) else ""
             if reasoning_text:
@@ -1824,7 +1916,7 @@ def main():
                         current_price = asset_prices.get(asset, 0)
                         if not current_price:
                             try:
-                                current_price = await hyperliquid.get_current_price(asset)
+                                current_price = await _ex_for(asset).get_current_price(asset)
                                 asset_prices[asset] = current_price
                             except Exception:
                                 continue
@@ -1848,8 +1940,8 @@ def main():
                                 
                                 add_event(f"📊 Strategy switch to SCALPING: Adjusting TP for {asset} to 5% (${new_tp:.4f})")
                                 try:
-                                    await hyperliquid.cancel_all_orders(asset)
-                                    await hyperliquid.place_take_profit(asset, is_long, position_size, new_tp)
+                                    await _ex_for(asset).cancel_all_orders(asset)
+                                    await _ex_for(asset).place_take_profit(asset, is_long, position_size, new_tp)
                                     add_event(f"✅ Updated TP for {asset} to 5% (scalping strategy)")
                                 except Exception as e:
                                     add_event(f"⚠️  Could not update TP for {asset}: {e}")
@@ -1860,7 +1952,7 @@ def main():
                             # New strategy will handle exits based on indicators
                             # Cancel existing TP orders and let trend strategy set new ones based on indicators
                             try:
-                                await hyperliquid.cancel_all_orders(asset)
+                                await _ex_for(asset).cancel_all_orders(asset)
                                 add_event(f"🧹 Cancelled old TP/SL orders for {asset} - trend strategy will set new ones based on indicators")
                             except Exception as e:
                                 add_event(f"⚠️  Could not cancel orders for {asset}: {e}")
@@ -1883,7 +1975,7 @@ def main():
                 current_price = asset_prices.get(asset, 0)
                 if not current_price or current_price <= 0:
                     try:
-                        current_price = await hyperliquid.get_current_price(asset)
+                        current_price = await _ex_for(asset).get_current_price(asset)
                         asset_prices[asset] = current_price
                     except Exception:
                         continue
@@ -2036,11 +2128,11 @@ def main():
                         )
                         try:
                             if is_long:
-                                await hyperliquid.place_sell_order(
+                                await _ex_for(asset).place_sell_order(
                                     asset, position_size, reduce_only=True
                                 )
                             else:
-                                await hyperliquid.place_buy_order(
+                                await _ex_for(asset).place_buy_order(
                                     asset, position_size, reduce_only=True
                                 )
                             await _safe_cancel_all_orders(asset, f"post-close {reason} cleanup")
@@ -2165,9 +2257,9 @@ def main():
                             try:
                                 close_action = "sell" if is_long else "buy"
                                 if is_long:
-                                    close_order = await hyperliquid.place_sell_order(asset, position_size, reduce_only=True)
+                                    close_order = await _ex_for(asset).place_sell_order(asset, position_size, reduce_only=True)
                                 else:
-                                    close_order = await hyperliquid.place_buy_order(asset, position_size, reduce_only=True)
+                                    close_order = await _ex_for(asset).place_buy_order(asset, position_size, reduce_only=True)
                                 add_event(f"✅ Closed {asset} position (max hold time) via {close_action} order")
                                 await _safe_cancel_all_orders(asset, "post-close max-hold cleanup")
                                 
@@ -2287,9 +2379,9 @@ def main():
                             close_size, rung, remaining_pct = fill
                             try:
                                 if is_long:
-                                    await hyperliquid.place_sell_order(asset, close_size, reduce_only=True)
+                                    await _ex_for(asset).place_sell_order(asset, close_size, reduce_only=True)
                                 else:
-                                    await hyperliquid.place_buy_order(asset, close_size, reduce_only=True)
+                                    await _ex_for(asset).place_buy_order(asset, close_size, reduce_only=True)
                                 add_event(
                                     f"💵 Scaled out of {asset}: closed {rung.size_pct:.0f}% "
                                     f"({close_size:.6f}) at {r_multiple:.2f}R, {remaining_pct:.0f}% still open"
@@ -2337,13 +2429,13 @@ def main():
                                     # Cancel old SL order if exists
                                     if active_trade_record and active_trade_record.get('sl_oid'):
                                         try:
-                                            await hyperliquid.cancel_order(asset, active_trade_record.get('sl_oid'))
+                                            await _ex_for(asset).cancel_order(asset, active_trade_record.get('sl_oid'))
                                         except Exception:
                                             pass
                                     
                                     # Place new trailing SL order
-                                    sl_order = await hyperliquid.place_stop_loss(asset, is_long, position_size, sl_price)
-                                    sl_oids = hyperliquid.extract_oids(sl_order) if hasattr(hyperliquid, 'extract_oids') else []
+                                    sl_order = await _ex_for(asset).place_stop_loss(asset, is_long, position_size, sl_price)
+                                    sl_oids = _ex_for(asset).extract_oids(sl_order) if hasattr(_ex_for(asset), 'extract_oids') else []
                                     sl_oid = sl_oids[0] if sl_oids else None
                                     
                                     # Update active trade record
@@ -2370,13 +2462,13 @@ def main():
                                     # Cancel old SL order if exists
                                     if active_trade_record and active_trade_record.get('sl_oid'):
                                         try:
-                                            await hyperliquid.cancel_order(asset, active_trade_record.get('sl_oid'))
+                                            await _ex_for(asset).cancel_order(asset, active_trade_record.get('sl_oid'))
                                         except Exception:
                                             pass
                                     
                                     # Place new trailing SL order
-                                    sl_order = await hyperliquid.place_stop_loss(asset, is_long, position_size, sl_price)
-                                    sl_oids = hyperliquid.extract_oids(sl_order) if hasattr(hyperliquid, 'extract_oids') else []
+                                    sl_order = await _ex_for(asset).place_stop_loss(asset, is_long, position_size, sl_price)
+                                    sl_oids = _ex_for(asset).extract_oids(sl_order) if hasattr(_ex_for(asset), 'extract_oids') else []
                                     sl_oid = sl_oids[0] if sl_oids else None
                                     
                                     # Update active trade record
@@ -2543,9 +2635,9 @@ def main():
                         # Close position immediately
                         close_action = "sell" if is_long else "buy"
                         if is_long:
-                            close_order = await hyperliquid.place_sell_order(asset, position_size, reduce_only=True)
+                            close_order = await _ex_for(asset).place_sell_order(asset, position_size, reduce_only=True)
                         else:
-                            close_order = await hyperliquid.place_buy_order(asset, position_size, reduce_only=True)
+                            close_order = await _ex_for(asset).place_buy_order(asset, position_size, reduce_only=True)
                         add_event(f"✅ Closed {asset} position ({reason}) via {close_action} order - Gains Protected!")
                         await _safe_cancel_all_orders(asset, f"post-close {reason} cleanup")
                         
@@ -2742,39 +2834,51 @@ def main():
 
                         # 1. Session breakers: a daily loss limit or a losing streak pauses
                         #    new entries while leaving open positions under stop/target control.
-                        governor_ok, governor_reason = risk_governor.check_can_enter(trading_settings)
+                        asset_trading_settings = _settings_for_asset(asset, trading_settings)
+                        if _looks_like_forex(asset) and not is_forex_session_open():
+                            add_event(f"💱 ENTRY BLOCKED: {asset} — forex session closed")
+                            continue
+                        governor_ok, governor_reason = risk_governor.check_can_enter(asset_trading_settings)
                         if not governor_ok:
                             add_event(f"🚦 ENTRY PAUSED: {governor_reason}")
                             continue
 
                         # 2. Re-entry cooldown. Repeatedly flipping the same pair in chop was the
                         #    single largest source of realised losses.
-                        entry_allowed, cooldown_reason = reentry_guard.check_entry(asset, is_buy, trading_settings)
+                        entry_allowed, cooldown_reason = reentry_guard.check_entry(asset, is_buy, asset_trading_settings)
                         if not entry_allowed:
                             add_event(f"⏸️  ENTRY BLOCKED: {cooldown_reason}")
                             continue
 
                         # 3. Higher-timeframe agreement, so we stop buying dips in downtrends.
                         trend_ok, trend_reason = check_trend_agreement(
-                            asset, is_buy, taapi.fetch_value, trading_settings
+                            asset, is_buy, taapi.fetch_value, asset_trading_settings
                         )
                         if not trend_ok:
                             add_event(f"🧭 ENTRY BLOCKED: {trend_reason}")
                             continue
 
-                        # Get per-asset leverage (from .env override or default)
-                        asset_leverage = per_asset_leverage.get(asset, default_leverage)
+                        # Get per-asset leverage (from .env override or forex/crypto default)
+                        asset_leverage = per_asset_leverage.get(
+                            asset, int(asset_trading_settings.get("leverage") or default_leverage)
+                        )
                         
                         # Get exchange max leverage for this asset
-                        available_balance = state.get('balance', 0.0)
-                        max_leverage = await get_max_leverage_for_asset(hyperliquid, asset)
+                        # Size against the venue that will take the order (IG cash ≠ OKX equity).
+                        ex = _ex_for(asset)
+                        try:
+                            venue_state = await ex.get_user_state()
+                            available_balance = float(venue_state.get("balance") or state.get("balance", 0.0) or 0)
+                        except Exception:
+                            available_balance = float(state.get("balance", 0.0) or 0)
+                        max_leverage = await get_max_leverage_for_asset(ex, asset)
                         
                         # ALWAYS USE MARGIN MODE - Strict enforcement of MARGIN_PER_POSITION and per-asset leverage
-                        margin_per_position = trading_settings.get("margin_per_position")
+                        margin_per_position = asset_trading_settings.get("margin_per_position")
                         
                         # CRITICAL: If margin_per_position is not set, skip trade (strict enforcement).
                         # Risk mode derives its own margin from the stop distance, so it is exempt.
-                        if margin_per_position is None and str(trading_settings.get("position_sizing_mode", "auto")).lower() == "risk":
+                        if margin_per_position is None and str(asset_trading_settings.get("position_sizing_mode", "auto")).lower() == "risk":
                             margin_per_position = available_balance
                         if margin_per_position is None:
                             add_event(f"❌ ERROR: MARGIN_PER_POSITION is not set in settings/.env. Cannot place trade for {asset}. Please configure MARGIN_PER_POSITION.")
@@ -2785,10 +2889,10 @@ def main():
                         # Only use exchange max if user's setting exceeds it AND exchange rejects it
                         leverage_to_use = asset_leverage  # Always start with user's setting (per-asset or default)
                         
-                        if hasattr(hyperliquid, 'set_leverage'):
+                        if hasattr(ex, 'set_leverage'):
                             try:
                                 # Try to set user's requested leverage (per-asset or default)
-                                await hyperliquid.set_leverage(asset, asset_leverage)
+                                await ex.set_leverage(asset, asset_leverage)
                                 # Successfully set - use user's leverage
                                 leverage_to_use = asset_leverage
                                 if asset_leverage != default_leverage:
@@ -2822,10 +2926,10 @@ def main():
                         # both where we exit and (in risk sizing mode) how large the position is.
                         active_exit_plan = _resolve_exit_plan(
                             asset,
-                            trading_settings,
+                            asset_trading_settings,
                             leverage_to_use,
                             current_price,
-                            trading_settings.get("interval") or CONFIG.get("interval") or "15m",
+                            asset_trading_settings.get("interval") or CONFIG.get("interval") or "15m",
                         )
                         if active_exit_plan.source == "atr":
                             add_event(
@@ -2834,11 +2938,11 @@ def main():
                                 f"target {active_exit_plan.target_price_pct:.2f}% of price"
                             )
 
-                        sizing_mode = str(trading_settings.get("position_sizing_mode", "auto")).lower()
+                        sizing_mode = str(asset_trading_settings.get("position_sizing_mode", "auto")).lower()
                         if sizing_mode == "risk":
                             # Notional is solved from the stop distance so each trade risks the same USD.
                             alloc_usd = calculate_risk_based_allocation(
-                                trading_settings,
+                                asset_trading_settings,
                                 available_balance,
                                 active_exit_plan.stop_price_pct,
                                 leverage_to_use,
@@ -2879,7 +2983,7 @@ def main():
                             # If LLM signals 'sell' with zero allocation but we have a position, close it reduce-only
                             if not is_buy and agent_manage_exits:
                                 # Check if position exists
-                                state_check = await hyperliquid.get_user_state()
+                                state_check = await _ex_for(asset).get_user_state()
                                 close_size = 0.0
                                 is_long_pos = True
                                 close_pos = None
@@ -2930,13 +3034,14 @@ def main():
                         else:
                             add_event(f"📊 Position sizing: ${alloc_usd:.2f} margin × {leverage_to_use}x leverage = ${notional_value:.2f} notional → {amount:.6f} contracts @ ${current_price:.2f}")
 
-                        order = await hyperliquid.place_buy_order(asset, amount) if is_buy else await hyperliquid.place_sell_order(asset, amount)
+                        ex = _ex_for(asset)
+                        order = await ex.place_buy_order(asset, amount) if is_buy else await ex.place_sell_order(asset, amount)
                         
                         # Wait for order to fill and position to be established
                         await asyncio.sleep(2)  # Give exchange time to process
                         
-                        # Verify position exists before placing TP/SL
-                        state_check = await hyperliquid.get_user_state()
+                        # Verify position exists before placing TP/SL (on the venue that took the order)
+                        state_check = await ex.get_user_state()
                         position_exists = False
                         actual_position_size = amount
                         
@@ -2954,7 +3059,7 @@ def main():
                         if not position_exists:
                             add_event(f"WARNING: Position for {asset} not found after order. Skipping TP/SL placement.")
                         
-                        fills_check = await hyperliquid.get_recent_fills(limit=10)
+                        fills_check = await ex.get_recent_fills(limit=10) if hasattr(ex, 'get_recent_fills') else []
                         filled = False
                         for fc in reversed(fills_check):
                             try:
@@ -3001,7 +3106,7 @@ def main():
                             
                             # Cancel existing TP/SL orders first to avoid "max stop order limit" error
                             try:
-                                await hyperliquid.cancel_all_orders(asset)
+                                await _ex_for(asset).cancel_all_orders(asset)
                                 add_event(f"🧹 Cancelled existing orders for {asset} before placing TP/SL")
                             except Exception as e:
                                 add_event(f"⚠️  Could not cancel existing orders for {asset}: {e}")
@@ -3021,7 +3126,7 @@ def main():
                             if not protection.get("protection_complete", False):
                                 add_event(f"🔁 Retrying protective orders for {asset} after incomplete placement...")
                                 try:
-                                    await hyperliquid.cancel_all_orders(asset)
+                                    await _ex_for(asset).cancel_all_orders(asset)
                                 except Exception:
                                     pass
                                 protection = await _ensure_protective_orders(
@@ -3317,7 +3422,7 @@ def main():
     async def _safe_cancel_all_orders(asset: str, reason: str = ""):
         """Best-effort cancel of all open orders for an asset."""
         try:
-            await hyperliquid.cancel_all_orders(asset)
+            await _ex_for(asset).cancel_all_orders(asset)
             suffix = f" ({reason})" if reason else ""
             add_event(f"🧹 Cancelled all open orders for {asset}{suffix}")
         except Exception as e:
@@ -3326,6 +3431,7 @@ def main():
 
     async def _ensure_protective_orders(asset: str, is_long: bool, position_size: float, tp_price, sl_price, trading_settings: dict):
         """Place and verify TP/SL orders with retries, returning confirmed values from open orders."""
+        ex = _ex_for(asset)
         confirmed_tp = None
         confirmed_sl = None
         confirmed_tp_oid = None
@@ -3336,8 +3442,8 @@ def main():
         # Attempt placement first (best effort)
         if tp_price:
             try:
-                tp_order = await hyperliquid.place_take_profit(asset, is_long, position_size, tp_price)
-                tp_oids = hyperliquid.extract_oids(tp_order) if hasattr(hyperliquid, "extract_oids") else []
+                tp_order = await ex.place_take_profit(asset, is_long, position_size, tp_price)
+                tp_oids = ex.extract_oids(tp_order) if hasattr(ex, "extract_oids") else []
                 if tp_oids:
                     confirmed_tp_oid = tp_oids[0]
                 add_event(f"✅ TP placed {asset} at {float(tp_price):.4f}")
@@ -3347,8 +3453,8 @@ def main():
         enable_sl_orders = bool(trading_settings.get("enable_stop_loss_orders", True))
         if sl_price and enable_sl_orders:
             try:
-                sl_order = await hyperliquid.place_stop_loss(asset, is_long, position_size, sl_price)
-                sl_oids = hyperliquid.extract_oids(sl_order) if hasattr(hyperliquid, "extract_oids") else []
+                sl_order = await ex.place_stop_loss(asset, is_long, position_size, sl_price)
+                sl_oids = ex.extract_oids(sl_order) if hasattr(ex, "extract_oids") else []
                 if sl_oids:
                     confirmed_sl_oid = sl_oids[0]
                 add_event(f"✅ SL placed {asset} at {float(sl_price):.4f}")
@@ -3358,7 +3464,7 @@ def main():
         # Verify via open orders and retry missing side (more attempts than before).
         for attempt in range(1, 5):
             try:
-                open_orders = await hyperliquid.get_open_orders()
+                open_orders = await ex.get_open_orders()
                 extracted = _extract_tp_sl_from_orders(open_orders, asset)
                 confirmed_tp = extracted.get("tp_price")
                 confirmed_sl = extracted.get("sl_price")
@@ -3383,17 +3489,17 @@ def main():
                 try:
                     # Cancel leftovers then re-place to avoid max-stop / duplicate issues
                     try:
-                        await hyperliquid.cancel_all_orders(asset)
+                        await ex.cancel_all_orders(asset)
                     except Exception:
                         pass
-                    await hyperliquid.place_take_profit(asset, is_long, position_size, tp_price)
+                    await ex.place_take_profit(asset, is_long, position_size, tp_price)
                     if sl_price and enable_sl_orders:
-                        await hyperliquid.place_stop_loss(asset, is_long, position_size, sl_price)
+                        await ex.place_stop_loss(asset, is_long, position_size, sl_price)
                 except Exception as e:
                     add_event(f"⚠️  TP retry failed for {asset}: {e}")
             elif missing_sl:
                 try:
-                    await hyperliquid.place_stop_loss(asset, is_long, position_size, sl_price)
+                    await ex.place_stop_loss(asset, is_long, position_size, sl_price)
                 except Exception as e:
                     add_event(f"⚠️  SL retry failed for {asset}: {e}")
             await asyncio.sleep(1)
@@ -3441,7 +3547,7 @@ def main():
                 current_px = None
                 if coin:
                     try:
-                        current_px = await hyperliquid.get_current_price(coin)
+                        current_px = await _ex_for(coin).get_current_price(coin)
                     except Exception as e:
                         logging.warning(f"Could not fetch current price for {coin}: {e}")
                         # Fallback to markPrice from position data if fetch fails
@@ -3923,7 +4029,7 @@ def main():
             for asset in args.assets:
                 try:
                     # Add timeout to prevent blocking
-                    current_price = await asyncio.wait_for(hyperliquid.get_current_price(asset), timeout=2.0)
+                    current_price = await asyncio.wait_for(_ex_for(asset).get_current_price(asset), timeout=2.0)
                     if current_price and current_price > 0:
                         # Calculate 24h change from price history if available
                         change_24h = 0.0
@@ -4417,7 +4523,7 @@ def main():
             is_buy = action == "buy"
             
             # Get current price to calculate position size
-            current_price = await hyperliquid.get_current_price(asset)
+            current_price = await _ex_for(asset).get_current_price(asset)
             if not current_price or current_price <= 0:
                 return web.json_response({"error": f"Could not get current price for {asset}"}, status=500)
             
@@ -4426,10 +4532,11 @@ def main():
             position_size = allocation_usd / current_price
             
             # Round position size (Aster requires async, Binance is sync - both work with await)
-            if hasattr(hyperliquid, 'round_size') and asyncio.iscoroutinefunction(hyperliquid.round_size):
-                position_size = await hyperliquid.round_size(asset, position_size)
+            ex = _ex_for(asset)
+            if hasattr(ex, 'round_size') and asyncio.iscoroutinefunction(ex.round_size):
+                position_size = await ex.round_size(asset, position_size)
             else:
-                position_size = hyperliquid.round_size(asset, position_size)
+                position_size = ex.round_size(asset, position_size) if hasattr(ex, 'round_size') else position_size
             
             logging.info(
                 f"🚨 ALERT SIGNAL: {asset} {action.upper()} @ ${current_price:.2f} "
@@ -4439,9 +4546,9 @@ def main():
             # Execute trade immediately
             try:
                 if is_buy:
-                    order_result = await hyperliquid.place_buy_order(asset, position_size)
+                    order_result = await _ex_for(asset).place_buy_order(asset, position_size)
                 else:
-                    order_result = await hyperliquid.place_sell_order(asset, position_size)
+                    order_result = await _ex_for(asset).place_sell_order(asset, position_size)
                 
                 # Check if order was successful (Aster and Binance have different response formats)
                 if isinstance(order_result, dict):
@@ -4461,7 +4568,7 @@ def main():
                 
                 try:
                     # Place take profit order
-                    tp_result = await hyperliquid.place_take_profit(asset, is_buy, position_size, tp_price)
+                    tp_result = await _ex_for(asset).place_take_profit(asset, is_buy, position_size, tp_price)
                     if isinstance(tp_result, dict):
                         # Aster format: direct orderId
                         if "orderId" in tp_result:
@@ -4484,7 +4591,7 @@ def main():
                 try:
                     # Place stop loss order (if enabled)
                     if CONFIG.get('enable_stop_loss_orders', True):
-                        sl_result = await hyperliquid.place_stop_loss(asset, is_buy, position_size, sl_price)
+                        sl_result = await _ex_for(asset).place_stop_loss(asset, is_buy, position_size, sl_price)
                     else:
                         sl_result = {"disabled": True}
                     if isinstance(sl_result, dict):
@@ -4573,7 +4680,7 @@ def main():
             
             # Get current price
             try:
-                current_price = await hyperliquid.get_current_price(asset)
+                current_price = await _ex_for(asset).get_current_price(asset)
                 if not current_price or current_price <= 0:
                     return web.json_response({"error": f"Could not get price for {asset}"}, status=404)
             except Exception as e:
@@ -4586,7 +4693,7 @@ def main():
             leverage = get_leverage_for_asset(asset, trading_settings.get('leverage', 10))
             
             # Get max leverage for asset from exchange
-            max_leverage = await get_max_leverage_for_asset(hyperliquid, asset)
+            max_leverage = await get_max_leverage_for_asset(_ex_for(asset), asset)
             leverage = min(leverage, max_leverage)
             
             # Calculate position size

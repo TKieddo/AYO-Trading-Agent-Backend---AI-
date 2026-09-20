@@ -13,13 +13,14 @@ class TechnicalAnalysisClient:
     """Fetches market data from Binance and calculates indicators using pandas-ta (TA-Lib compatible)."""
 
     def __init__(self):
-        """Initialize market-data helpers (Binance public + optional Alpaca)."""
+        """Initialize market-data helpers (OKX/Binance public + optional Alpaca/IG)."""
         self.binance_spot_base_url = "https://api.binance.com/api/v3"
         self.binance_futures_base_url = "https://fapi.binance.com/fapi/v1"
         self.logger = logging.getLogger(__name__)
         # Cache symbols/intervals that recently returned 400 to prevent log spam
         self._invalid_symbol_cache: Dict[str, float] = {}
         self._invalid_symbol_ttl_seconds = 900
+        self._okx_client = None
         try:
             from src.config_loader import CONFIG
             self._alpaca_key = CONFIG.get("alpaca_api_key")
@@ -29,11 +30,38 @@ class TechnicalAnalysisClient:
             self._stock_assets = {
                 p.strip().upper() for p in stock_raw.replace(",", " ").split() if p.strip()
             }
+            self._preferred_exchange = str(CONFIG.get("exchange") or "").lower()
+            self._okx_ready = bool(
+                CONFIG.get("okx_api_key") and CONFIG.get("okx_api_secret") and CONFIG.get("okx_passphrase")
+            )
         except Exception:
             self._alpaca_key = None
             self._alpaca_secret = None
             self._alpaca_data_url = "https://data.alpaca.markets"
             self._stock_assets = set()
+            self._preferred_exchange = ""
+            self._okx_ready = False
+
+    def _get_okx_bars(self, symbol: str, interval: str, limit: int = 100) -> pd.DataFrame:
+        """Fetch OHLCV from OKX SWAP when credentials exist (or exchange prefers OKX)."""
+        if not self._okx_ready:
+            return pd.DataFrame()
+        try:
+            if self._okx_client is None:
+                from src.trading.okx_api import OKXAPI
+                self._okx_client = OKXAPI()
+            rows = self._okx_client.fetch_candles(symbol, interval=interval, limit=limit)
+            if not rows:
+                return pd.DataFrame()
+            df = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
+            df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
+            for col in ["open", "high", "low", "close", "volume"]:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+            df.set_index("timestamp", inplace=True)
+            return df
+        except Exception as e:
+            self.logger.debug(f"OKX bars unavailable for {symbol} {interval}: {e}")
+            return pd.DataFrame()
 
     def _get_with_retry(self, url: str, params: dict, retries: int = 3, backoff: float = 0.5):
         """Perform a GET request with exponential backoff retry logic."""
@@ -200,7 +228,7 @@ class TechnicalAnalysisClient:
             return pd.DataFrame()
 
     def _get_klines(self, symbol: str, interval: str, limit: int = 500) -> pd.DataFrame:
-        """Fetch candlestick data (Alpaca for stocks; IG for forex; Binance then Alpaca for crypto)."""
+        """Fetch candlestick data (IG for forex; OKX/Binance then Alpaca for crypto)."""
         if self._looks_like_forex(symbol):
             ig_df = self._get_ig_bars(symbol, interval, limit=limit)
             if not ig_df.empty:
@@ -210,6 +238,12 @@ class TechnicalAnalysisClient:
             alpaca_df = self._get_alpaca_bars(symbol, interval, limit=limit)
             if not alpaca_df.empty:
                 return alpaca_df
+
+        # Prefer the live trading venue so Pair Hunter symbols always have indicators.
+        if self._preferred_exchange == "okx" or self._okx_ready:
+            okx_df = self._get_okx_bars(symbol, interval, limit=min(limit, 300))
+            if not okx_df.empty:
+                return okx_df
 
         try:
             # Convert symbol format (BTC/USDT -> BTCUSDT)

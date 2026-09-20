@@ -44,7 +44,12 @@ def check_trend_agreement(
     slow_period = int(_setting(trading_settings, "htf_trend_slow_ema", 50) or 50)
     min_separation_pct = float(_setting(trading_settings, "htf_trend_min_separation_pct", 0.0) or 0.0)
 
-    symbol = f"{asset}/USDT"
+    asset_u = str(asset or "").replace("/", "").replace("_", "").upper()
+    forex_ccy = ("USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "NZD")
+    if len(asset_u) >= 6 and asset_u[:3] in forex_ccy and asset_u[3:6] in forex_ccy:
+        symbol = f"{asset_u[:3]}/{asset_u[3:6]}"
+    else:
+        symbol = f"{asset}/USDT"
     try:
         fast = fetch_value("ema", symbol, timeframe, params={"period": fast_period}, key="value")
         slow = fetch_value("ema", symbol, timeframe, params={"period": slow_period}, key="value")

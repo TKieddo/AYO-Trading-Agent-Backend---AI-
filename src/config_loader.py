@@ -271,6 +271,14 @@ CONFIG = {
     "ALERT_TIMEFRAME": _get_env("ALERT_TIMEFRAME", "5m"),  # Default timeframe (5m, 15m, 1h, etc.)
     # Multi-exchange mode (trade on multiple exchanges simultaneously)
     "MULTI_EXCHANGE_MODE": _get_env("MULTI_EXCHANGE_MODE", "false"),  # Set to "true" to enable
+    # Forex-specific overrides (used when MULTI_EXCHANGE_MODE routes pairs to IG)
+    "forex_interval": _get_env("FOREX_INTERVAL", "15m"),
+    "forex_leverage": _get_int("FOREX_LEVERAGE", 20),
+    "forex_risk_per_trade_usd": _get_float("FOREX_RISK_PER_TRADE_USD"),
+    "forex_exit_mode": _get_env("FOREX_EXIT_MODE"),  # defaults to global EXIT_MODE when unset
+    "forex_sl_atr_mult": _get_float("FOREX_SL_ATR_MULT"),
+    "forex_tp_rr_ratio": _get_float("FOREX_TP_RR_RATIO"),
+    "skip_llm_without_market_data": _get_bool("SKIP_LLM_WITHOUT_MARKET_DATA", True),
 }
 
 def _parse_assets(assets_str: str | None) -> list[str]:

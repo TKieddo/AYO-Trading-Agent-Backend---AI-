@@ -585,6 +585,44 @@ class OKXAPI:
         except Exception:
             return None
 
+    def fetch_candles(self, symbol: str, interval: str = "15m", limit: int = 100) -> List[List[Any]]:
+        """Sync OHLCV rows as ``[ts_ms, open, high, low, close, volume]`` for the TA client."""
+        inst_id = self._to_inst_id(symbol)
+        bar_map = {
+            "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
+            "1h": "1H", "2h": "2H", "4h": "4H", "6h": "6H", "12h": "12H",
+            "1d": "1D", "1w": "1W",
+        }
+        bar = bar_map.get((interval or "15m").lower(), "15m")
+        try:
+            data = self._request(
+                "GET",
+                "/api/v5/market/candles",
+                params={"instId": inst_id, "bar": bar, "limit": str(min(int(limit), 300))},
+                auth=False,
+            )
+        except Exception as e:
+            logger.error(f"OKX candles error for {symbol} {interval}: {e}")
+            return []
+
+        rows: List[List[Any]] = []
+        for raw in reversed(data if isinstance(data, list) else []):
+            try:
+                rows.append([
+                    int(raw[0]),
+                    float(raw[1]),
+                    float(raw[2]),
+                    float(raw[3]),
+                    float(raw[4]),
+                    float(raw[5] if len(raw) > 5 else 0),
+                ])
+            except (IndexError, TypeError, ValueError):
+                continue
+        return rows
+
+    async def get_klines(self, symbol: str, interval: str = "15m", limit: int = 100) -> List[List[Any]]:
+        return self.fetch_candles(symbol, interval, limit)
+
     async def cancel_order(self, asset: str, oid: str):
         inst_id = self._to_inst_id(asset)
         try:
