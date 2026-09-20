@@ -1,7 +1,10 @@
 [build]
-builder = "nixpacks"
+builder = "dockerfile"
+dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "poetry run python src/main.py"
+startCommand = "poetry run python -m src.main"
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 5
+healthcheckPath = "/"
+healthcheckTimeout = 30
