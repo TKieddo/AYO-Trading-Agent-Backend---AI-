@@ -79,7 +79,27 @@ COMMENT ON COLUMN trading_settings.max_consecutive_losses IS
 COMMENT ON COLUMN trading_settings.htf_trend_min_separation_pct IS
   'Minimum EMA separation on the confirmation timeframe. Below this the market is treated as a range.';
 
--- The original check only allows auto/fixed/target_profit/margin. Risk sizing is a fifth mode.
+-- The original column was created with an inline CHECK that may be named differently from
+-- trading_settings_position_sizing_mode_check. Drop every check that mentions the column,
+-- then recreate the named one with 'risk' included.
+DO $$
+DECLARE
+  r RECORD;
+BEGIN
+  FOR r IN
+    SELECT con.conname
+    FROM pg_constraint con
+    JOIN pg_class rel ON rel.oid = con.conrelid
+    JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
+    WHERE rel.relname = 'trading_settings'
+      AND nsp.nspname = 'public'
+      AND con.contype = 'c'
+      AND pg_get_constraintdef(con.oid) ILIKE '%position_sizing_mode%'
+  LOOP
+    EXECUTE format('ALTER TABLE trading_settings DROP CONSTRAINT IF EXISTS %I', r.conname);
+  END LOOP;
+END $$;
+
 ALTER TABLE trading_settings
 DROP CONSTRAINT IF EXISTS trading_settings_position_sizing_mode_check;
 
