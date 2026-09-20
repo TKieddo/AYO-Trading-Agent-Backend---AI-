@@ -79,6 +79,14 @@ COMMENT ON COLUMN trading_settings.max_consecutive_losses IS
 COMMENT ON COLUMN trading_settings.htf_trend_min_separation_pct IS
   'Minimum EMA separation on the confirmation timeframe. Below this the market is treated as a range.';
 
+-- The original check only allows auto/fixed/target_profit/margin. Risk sizing is a fifth mode.
+ALTER TABLE trading_settings
+DROP CONSTRAINT IF EXISTS trading_settings_position_sizing_mode_check;
+
+ALTER TABLE trading_settings
+ADD CONSTRAINT trading_settings_position_sizing_mode_check
+CHECK (position_sizing_mode IN ('auto', 'fixed', 'target_profit', 'margin', 'risk'));
+
 -- Move the existing row onto the new profile. Legacy TP/SL stay as the fixed-mode fallback,
 -- expressed as margin ROI, and are only consulted when ATR data is unavailable.
 UPDATE trading_settings
