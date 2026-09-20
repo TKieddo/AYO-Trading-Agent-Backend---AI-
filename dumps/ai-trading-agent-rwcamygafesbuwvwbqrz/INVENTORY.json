@@ -1,0 +1,32 @@
+{
+  "project_id": "rwcamygafesbuwvwbqrz",
+  "project_name": "AI-Trading Agent",
+  "url": "https://rwcamygafesbuwvwbqrz.supabase.co",
+  "region": "eu-north-1",
+  "status": "ACTIVE_HEALTHY",
+  "note": "All public tables had 0 rows at export time \u2014 schema-only migration.",
+  "tables": [
+    "account_metrics",
+    "backtest_results",
+    "decisions",
+    "historical_ohlcv",
+    "optimization_iterations",
+    "order_metrics_summary",
+    "orders",
+    "pair_hunter_stats",
+    "performance_series",
+    "pnl_series",
+    "portfolio_activities",
+    "portfolio_assets",
+    "positions",
+    "prices",
+    "strategies",
+    "strategy_optimizations",
+    "strategy_performance",
+    "trades",
+    "trading_logs",
+    "trading_settings",
+    "wallet_balance_history"
+  ],
+  "column_count": 255
+}

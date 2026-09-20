@@ -1,0 +1,35 @@
+# DigitalOcean App Platform Configuration
+# Note: App Platform uses web UI for configuration, but this file documents the structure
+# Use the web UI at: https://cloud.digitalocean.com/apps
+
+name: ai-trading-agent
+region: nyc
+
+services:
+  # Python Trading Agent Service
+  - name: trading-agent
+    github:
+      repo: YOUR_GITHUB_USERNAME/YOUR_REPO_NAME
+      branch: main
+      deploy_on_push: true
+    dockerfile_path: Dockerfile
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    # Environment variables - add in DigitalOcean dashboard
+    # See ENV_DEPLOYMENT_TEMPLATE.md for complete list
+
+  # Next.js Dashboard Service  
+  - name: dashboard
+    github:
+      repo: YOUR_GITHUB_USERNAME/YOUR_REPO_NAME
+      branch: main
+      deploy_on_push: true
+    source_dir: dashboard
+    build_command: npm install && npm run build
+    run_command: npm start
+    http_port: 3001
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    # Environment variables - add in DigitalOcean dashboard
+    # See ENV_DEPLOYMENT_TEMPLATE.md for complete list
