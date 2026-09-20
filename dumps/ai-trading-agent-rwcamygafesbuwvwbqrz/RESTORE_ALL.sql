@@ -1,6 +1,6 @@
--- AI-Trading Agent dump
--- Project: rwcamygafesbuwvwbqrz (https://rwcamygafesbuwvwbqrz.supabase.co)
--- Data rows: ALL TABLES EMPTY (0 rows) — schema-only dump
+-- AI-Trading Agent dump (fresh-install safe)
+-- Project: rwcamygafesbuwvwbqrz
+-- Skips historical clear_* wipe migrations (they assumed existing cloud tables)
 -- Supabase Schema for Alpha Arena Trading Dashboard
 -- Run this in your Supabase SQL editor
 
@@ -160,7 +160,7 @@ CREATE POLICY "Allow public read access" ON pair_hunter_stats FOR SELECT USING (
 -- Prices table will broadcast changes automatically
 
 
--- === Migrations (ordered by filename) ===
+-- === Migrations (create/alter only) ===
 
 -- >>> 20250104_order_metrics_fees.sql
 -- Migration: Add order metrics and fees/profit summary table
@@ -360,50 +360,7 @@ COMMENT ON COLUMN orders.status IS 'Order status: open, filled, canceled, reject
 
 
 
--- >>> 20250106_clear_binance_data.sql
--- Clear old Binance data and prepare for Hyperliquid data
--- This migration removes all Binance-related data to start fresh with Hyperliquid
-
--- Clear all trades (Binance trades)
-TRUNCATE TABLE trades CASCADE;
-
--- Clear all orders (Binance orders)
-TRUNCATE TABLE orders CASCADE;
-
--- Clear all positions (Binance positions)
-TRUNCATE TABLE positions CASCADE;
-
--- Clear account metrics (Binance metrics)
-TRUNCATE TABLE account_metrics CASCADE;
-
--- Clear decisions (old decisions)
-TRUNCATE TABLE decisions CASCADE;
-
--- Note: We keep prices table as it's exchange-agnostic
--- Note: We keep trading_logs as they may contain useful historical information
-
--- Reset sequences (if any)
-DO $$ 
-BEGIN
-    -- Reset any auto-increment sequences if they exist
-    PERFORM setval(pg_get_serial_sequence('trades', 'id'), 1, false);
-    PERFORM setval(pg_get_serial_sequence('orders', 'id'), 1, false);
-    PERFORM setval(pg_get_serial_sequence('positions', 'id'), 1, false);
-    PERFORM setval(pg_get_serial_sequence('account_metrics', 'id'), 1, false);
-    PERFORM setval(pg_get_serial_sequence('decisions', 'id'), 1, false);
-EXCEPTION WHEN others THEN NULL;
-END $$;
-
--- Log the cleanup
-INSERT INTO trading_logs (level, message, data, timestamp) 
-VALUES (
-    'info',
-    'Database cleared for Hyperliquid migration',
-    '{"migration": "20250106_clear_binance_data", "tables_cleared": ["trades", "orders", "positions", "account_metrics", "decisions"]}'::jsonb,
-    NOW()
-) ON CONFLICT DO NOTHING;
-
-
+-- >>> SKIPPED 20250106_clear_binance_data.sql (data wipe; not needed on empty DB)
 
 -- >>> 20250106_wallet_balance_history.sql
 -- Create wallet_balance_history table to track account value over time
@@ -473,88 +430,7 @@ COMMENT ON TABLE wallet_balance_history IS 'Historical wallet balance snapshots 
 
 
 
--- >>> 20250107_clear_all_tables_aster.sql
--- Clear all tables for fresh start with Aster DEX
--- This migration removes all data from all tables to start fresh
-
--- Clear all orders (old Binance/Hyperliquid orders)
-TRUNCATE TABLE orders CASCADE;
-
--- Clear all trades (old trades)
-TRUNCATE TABLE trades CASCADE;
-
--- Clear all positions (old positions)
-TRUNCATE TABLE positions CASCADE;
-
--- Clear account metrics (old metrics)
-TRUNCATE TABLE account_metrics CASCADE;
-
--- Clear decisions (old decisions)
-TRUNCATE TABLE decisions CASCADE;
-
--- Clear prices (price history)
-TRUNCATE TABLE prices CASCADE;
-
--- Clear trading logs
-TRUNCATE TABLE trading_logs CASCADE;
-
--- Clear PNL series
-TRUNCATE TABLE pnl_series CASCADE;
-
--- Clear performance series
-TRUNCATE TABLE performance_series CASCADE;
-
--- Clear wallet balance history
-DO $$ 
-BEGIN
-    TRUNCATE TABLE wallet_balance_history CASCADE;
-EXCEPTION WHEN undefined_table THEN NULL;
-END $$;
-
--- Clear wins_losses_stats (materialized view - refresh after clearing trades)
-DO $$ 
-BEGIN
-    -- Refresh the materialized view to clear it (since underlying trades are cleared)
-    IF EXISTS (SELECT 1 FROM pg_matviews WHERE matviewname = 'wins_losses_stats') THEN
-        REFRESH MATERIALIZED VIEW wins_losses_stats;
-    END IF;
-EXCEPTION WHEN others THEN NULL;
-END $$;
-
--- Clear order_metrics_summary table
-DO $$ 
-BEGIN
-    TRUNCATE TABLE order_metrics_summary CASCADE;
-EXCEPTION WHEN undefined_table THEN NULL;
-END $$;
-
--- Reset sequences (if any)
-DO $$ 
-BEGIN
-    -- Reset any auto-increment sequences if they exist
-    PERFORM setval(pg_get_serial_sequence('trades', 'id'), 1, false);
-    PERFORM setval(pg_get_serial_sequence('orders', 'id'), 1, false);
-    PERFORM setval(pg_get_serial_sequence('positions', 'id'), 1, false);
-    PERFORM setval(pg_get_serial_sequence('account_metrics', 'id'), 1, false);
-    PERFORM setval(pg_get_serial_sequence('decisions', 'id'), 1, false);
-EXCEPTION WHEN others THEN NULL;
-END $$;
-
--- Log the cleanup (insert after clearing trading_logs, so we need to re-enable it temporarily)
--- Note: This will be the first entry in the newly cleared trading_logs table
-DO $$ 
-BEGIN
-    INSERT INTO trading_logs (level, message, data, timestamp) 
-    VALUES (
-        'info',
-        'Database cleared for Aster DEX migration - all tables cleared',
-        '{"migration": "20250107_clear_all_tables_aster", "tables_cleared": ["orders", "trades", "positions", "account_metrics", "decisions", "prices", "trading_logs", "pnl_series", "performance_series", "wallet_balance_history", "wins_losses_stats", "order_metrics_summary"], "exchange": "aster"}'::jsonb,
-        NOW()
-    );
-EXCEPTION WHEN others THEN NULL;
-END $$;
-
-
+-- >>> SKIPPED 20250107_clear_all_tables_aster.sql (data wipe; not needed on empty DB)
 
 -- >>> 20250107_trading_settings.sql
 -- Create trading_settings table for persistent trading configuration

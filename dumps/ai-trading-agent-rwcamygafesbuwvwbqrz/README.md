@@ -8,7 +8,8 @@
 ## Restore on self-hosted Supabase / Coolify
 
 1. Stand up Supabase (or Postgres + PostgREST if you only need SQL).
-2. In SQL editor / `psql`, run `RESTORE_ALL.sql` (schema + migrations).
+2. In SQL editor / `psql`, run `RESTORE_ALL.sql` (schema + create/alter migrations).
+   - Historical `clear_*` wipe migrations are **skipped** (they caused `pnl_series` errors on empty DBs).
 3. Then run `02_live_extras.sql` (functions + `wins_losses_stats` matview).
 4. Point the agent at the new URL:
 
