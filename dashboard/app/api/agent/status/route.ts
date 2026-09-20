@@ -1,9 +1,18 @@
 import { NextResponse } from "next/server";
 
-const PYTHON_API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+function agentApiUrl(): string {
+  // Prefer runtime AGENT_API_URL so Coolify env works without rebuild.
+  // NEXT_PUBLIC_API_URL may be baked at build time.
+  return (
+    process.env.AGENT_API_URL ||
+    process.env.NEXT_PUBLIC_API_URL ||
+    "http://localhost:3001"
+  ).replace(/\/$/, "");
+}
 
 export async function GET() {
   try {
+    const PYTHON_API_URL = agentApiUrl();
     // Create AbortController for timeout
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout for faster failure

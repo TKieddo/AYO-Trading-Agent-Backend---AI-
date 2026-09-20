@@ -538,8 +538,14 @@ class OKXAPI:
                     "symbol": asset,
                     "side": f.get("side"),
                     "px": float(f.get("fillPx") or 0),
+                    "price": float(f.get("fillPx") or 0),
                     "sz": float(f.get("fillSz") or 0),
+                    "size": float(f.get("fillSz") or 0),
+                    "fee": float(f.get("fee") or 0),
+                    "realizedPnl": f.get("fillPnl"),
+                    "pnl": f.get("fillPnl"),
                     "time": f.get("ts"),
+                    "id": f.get("tradeId") or f.get("billId"),
                     "raw": f,
                 })
             return out

@@ -3759,12 +3759,9 @@ def main():
             logging.info("Supabase not configured - skipping trade sync")
             return
         
-        # Get binance_api from exchange (if it's BinanceAPI)
-        from src.trading.binance_api import BinanceAPI
-        binance_api = exchange if isinstance(exchange, BinanceAPI) else None
-        
-        if not binance_api:
-            logging.warning("Binance API not initialized - cannot sync trades")
+        # Prefer exchange.get_recent_fills (OKX/Binance/Aster) when available
+        if not hasattr(exchange, "get_recent_fills"):
+            logging.warning("Current exchange has no get_recent_fills — cannot sync trades")
             return
         
         try:
@@ -3798,10 +3795,11 @@ def main():
         
         while True:
             try:
-                # Fetch recent trades from Binance
-                logging.info("📥 Fetching trades from Binance...")
-                trades = await binance_api.get_recent_fills(limit=1000)
-                logging.info(f"📊 Fetched {len(trades)} trades from Binance")
+                # Fetch recent fills from active exchange (OKX / Binance / etc.)
+                exchange_name = getattr(exchange, "name", type(exchange).__name__)
+                logging.info(f"📥 Fetching trades from {exchange_name}...")
+                trades = await exchange.get_recent_fills(limit=1000)
+                logging.info(f"📊 Fetched {len(trades)} trades from {exchange_name}")
                 
                 if not trades:
                     logging.info("No trades found, waiting 1 minute before next check...")
@@ -3856,19 +3854,25 @@ def main():
                 # Format and filter new trades
                 new_trades = []
                 for trade in trades:
-                    symbol = trade.get('symbol', '').replace('USDT', '')
-                    side = trade.get('side', '').lower()
+                    symbol = str(trade.get('symbol') or trade.get('coin') or '').replace('USDT', '').replace('-SWAP', '')
+                    side = str(trade.get('side', '')).lower()
                     if side not in ['buy', 'sell']:
                         side = 'buy' if side == 'buy' else 'sell'
                     
-                    price = float(trade.get('price', 0))
-                    size = float(trade.get('size', trade.get('qty', 0)))
-                    fee = float(trade.get('fee', trade.get('commission', 0)))
-                    realized_pnl = trade.get('realizedPnl') or trade.get('realized_pnl')
-                    pnl = float(realized_pnl) if realized_pnl is not None else None
+                    price = float(trade.get('price') or trade.get('px') or trade.get('fillPx') or 0)
+                    size = float(trade.get('size') or trade.get('sz') or trade.get('qty') or trade.get('fillSz') or 0)
+                    fee = float(trade.get('fee') or trade.get('commission') or trade.get('fee') or 0)
+                    realized_pnl = trade.get('realizedPnl') or trade.get('realized_pnl') or trade.get('pnl')
+                    if realized_pnl is None and isinstance(trade.get('raw'), dict):
+                        realized_pnl = trade['raw'].get('fillPnl') or trade['raw'].get('pnl')
+                    pnl = float(realized_pnl) if realized_pnl is not None and str(realized_pnl) != '' else None
                     
                     # Convert timestamp to ISO string
-                    timestamp_ms = trade.get('time') or trade.get('timestamp', 0)
+                    timestamp_ms = trade.get('time') or trade.get('timestamp') or trade.get('ts') or 0
+                    try:
+                        timestamp_ms = int(timestamp_ms)
+                    except (TypeError, ValueError):
+                        timestamp_ms = 0
                     if timestamp_ms:
                         if timestamp_ms > 1e12:  # Already in milliseconds
                             timestamp_iso = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).isoformat()
@@ -3988,29 +3992,27 @@ def main():
                 await asyncio.sleep(600)
 
     async def handle_trades(request):
-        """Return trade history from Binance API."""
+        """Return trade history from the active exchange (OKX / Binance / etc.)."""
         try:
             limit = int(request.query.get('limit', 1000))
             
-            # Check if exchange is BinanceAPI instance
-            from src.trading.binance_api import BinanceAPI
-            binance_api = exchange if isinstance(exchange, BinanceAPI) else None
-            
-            if not binance_api:
+            if not hasattr(exchange, "get_recent_fills"):
                 return web.json_response({
-                    'error': 'Binance API not initialized',
+                    'error': 'Exchange does not support trade history',
                     'trades': []
                 }, status=503)
             
+            exchange_name = getattr(exchange, "name", type(exchange).__name__).lower()
+            
             # Get all trades using get_recent_fills with timeout
             try:
-                trades = await asyncio.wait_for(binance_api.get_recent_fills(limit=limit), timeout=12.0)
+                trades = await asyncio.wait_for(exchange.get_recent_fills(limit=limit), timeout=12.0)
             except asyncio.TimeoutError:
                 logger.warning("get_recent_fills timed out after 12s, returning empty trades")
                 return web.json_response({
                     'trades': [],
                     'count': 0,
-                    'source': 'binance',
+                    'source': exchange_name,
                     'warning': 'Request timed out'
                 })
             except Exception as e:
@@ -4018,26 +4020,33 @@ def main():
                 return web.json_response({
                     'trades': [],
                     'count': 0,
-                    'source': 'binance',
+                    'source': exchange_name,
                     'warning': f'Error: {str(e)[:100]}'
                 })
             
             # Format trades for frontend
             formatted_trades = []
             for trade in trades:
-                symbol = trade.get('symbol', '').replace('USDT', '')
-                side = trade.get('side', '').lower()
+                symbol = str(trade.get('symbol') or trade.get('coin') or '').replace('USDT', '').replace('-SWAP', '')
+                side = str(trade.get('side', '')).lower()
                 if side not in ['buy', 'sell']:
                     side = 'buy' if side == 'buy' else 'sell'
                 
-                price = float(trade.get('price', 0))
-                size = float(trade.get('size', trade.get('qty', 0)))
-                fee = float(trade.get('fee', trade.get('commission', 0)))
-                realized_pnl = trade.get('realizedPnl') or trade.get('realized_pnl')
-                pnl = float(realized_pnl) if realized_pnl is not None else None
+                price = float(trade.get('price') or trade.get('px') or trade.get('fillPx') or 0)
+                size = float(trade.get('size') or trade.get('sz') or trade.get('qty') or trade.get('fillSz') or 0)
+                fee = float(trade.get('fee') or trade.get('commission') or 0)
+                realized_pnl = trade.get('realizedPnl') or trade.get('realized_pnl') or trade.get('pnl')
+                if realized_pnl is None and isinstance(trade.get('raw'), dict):
+                    realized_pnl = trade['raw'].get('fillPnl') or trade['raw'].get('pnl')
+                    fee = fee or float(trade['raw'].get('fee') or 0)
+                pnl = float(realized_pnl) if realized_pnl is not None and str(realized_pnl) != '' else None
                 
                 # Convert timestamp to ISO string
-                timestamp_ms = trade.get('time') or trade.get('timestamp', 0)
+                timestamp_ms = trade.get('time') or trade.get('timestamp') or trade.get('ts') or 0
+                try:
+                    timestamp_ms = int(timestamp_ms)
+                except (TypeError, ValueError):
+                    timestamp_ms = 0
                 if timestamp_ms:
                     if timestamp_ms > 1e12:  # Already in milliseconds
                         timestamp_iso = datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).isoformat()
@@ -4047,7 +4056,9 @@ def main():
                     timestamp_iso = datetime.now(timezone.utc).isoformat()
                 
                 # Create unique ID
-                trade_id = trade.get('id') or trade.get('tradeId')
+                trade_id = trade.get('id') or trade.get('tradeId') or trade.get('fillId')
+                if not trade_id and isinstance(trade.get('raw'), dict):
+                    trade_id = trade['raw'].get('tradeId') or trade['raw'].get('billId')
                 if not trade_id:
                     # Create hash from trade data
                     import hashlib
@@ -4071,7 +4082,7 @@ def main():
             return web.json_response({
                 'trades': formatted_trades,
                 'count': len(formatted_trades),
-                'source': 'binance'
+                'source': exchange_name
             })
         except Exception as e:
             logger.error(f"Error in handle_trades: {e}")
