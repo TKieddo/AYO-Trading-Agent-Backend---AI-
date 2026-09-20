@@ -1,6 +1,157 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSupabase } from "@/lib/supabase/server";
 
+type FieldSpec =
+  | { kind: "bool" }
+  | { kind: "int"; min: number; max: number }
+  | { kind: "num"; min: number; max: number; nullable?: boolean }
+  | { kind: "enum"; values: string[] }
+  | { kind: "text"; pattern?: RegExp; maxLength?: number };
+
+/**
+ * Every adaptive-risk knob the agent reads, with the range the dashboard will accept.
+ * Anything absent from the request body is left untouched.
+ */
+const ADAPTIVE_RISK_FIELDS: Record<string, FieldSpec> = {
+  // Volatility-adaptive exits
+  exit_mode: { kind: "enum", values: ["atr", "fixed"] },
+  sl_atr_mult: { kind: "num", min: 0.5, max: 10 },
+  tp_rr_ratio: { kind: "num", min: 0.5, max: 10 },
+  atr_period: { kind: "int", min: 2, max: 200 },
+  min_stop_price_pct: { kind: "num", min: 0.05, max: 20 },
+  max_stop_price_pct: { kind: "num", min: 0.1, max: 50 },
+
+  // Risk-based sizing
+  risk_per_trade_usd: { kind: "num", min: 0.1, max: 100000, nullable: true },
+  risk_per_trade_pct: { kind: "num", min: 0.01, max: 20 },
+  max_notional_per_position: { kind: "num", min: 1, max: 10000000, nullable: true },
+  min_notional_per_position: { kind: "num", min: 0, max: 1000000 },
+
+  // Scale-out ladder
+  enable_profit_ladder: { kind: "bool" },
+  profit_ladder: { kind: "text", pattern: /^\s*(\d+(\.\d+)?\s*:\s*\d+(\.\d+)?\s*)(,\s*\d+(\.\d+)?\s*:\s*\d+(\.\d+)?\s*)*$/, maxLength: 200 },
+  breakeven_after_first_fill: { kind: "bool" },
+  enable_breakeven_stop: { kind: "bool" },
+  breakeven_trigger_r: { kind: "num", min: 0.1, max: 10 },
+  trailing_stop_activation_r: { kind: "num", min: 0.1, max: 20 },
+  trailing_stop_distance_r: { kind: "num", min: 0.1, max: 20 },
+
+  // Re-entry control
+  reentry_cooldown_minutes: { kind: "num", min: 0, max: 10080 },
+  loss_reentry_cooldown_minutes: { kind: "num", min: 0, max: 10080 },
+  block_direction_flip: { kind: "bool" },
+
+  // Circuit breakers
+  max_daily_loss_usd: { kind: "num", min: 0, max: 1000000, nullable: true },
+  max_daily_loss_pct: { kind: "num", min: 0, max: 100 },
+  max_consecutive_losses: { kind: "int", min: 0, max: 100 },
+  loss_streak_pause_minutes: { kind: "num", min: 0, max: 10080 },
+
+  // Higher-timeframe trend filter
+  enable_htf_trend_filter: { kind: "bool" },
+  htf_trend_timeframe: { kind: "text", pattern: /^\d+[mhdw]$/i, maxLength: 8 },
+  htf_trend_fast_ema: { kind: "int", min: 2, max: 400 },
+  htf_trend_slow_ema: { kind: "int", min: 2, max: 400 },
+  htf_trend_min_separation_pct: { kind: "num", min: 0, max: 20 },
+  htf_block_when_flat: { kind: "bool" },
+
+  // Analysis timeframes
+  intraday_timeframe: { kind: "text", pattern: /^\d+[mhdw]$/i, maxLength: 8 },
+  longterm_timeframe: { kind: "text", pattern: /^\d+[mhdw]$/i, maxLength: 8 },
+
+  // Pair hunter
+  pair_hunter_min_volatility: { kind: "num", min: 0, max: 50 },
+  pair_hunter_ideal_volatility: { kind: "num", min: 0, max: 50 },
+  pair_hunter_max_volatility: { kind: "num", min: 0, max: 100 },
+  pair_hunter_min_volume_24h: { kind: "num", min: 0, max: 100000000000 },
+  pair_hunter_min_trend_strength: { kind: "num", min: 0, max: 100 },
+  pair_hunter_min_price: { kind: "num", min: 0, max: 100000 },
+  pair_hunter_max_spread_pct: { kind: "num", min: 0, max: 10 },
+  pair_hunter_timeframe: { kind: "text", pattern: /^\d+[mhdw]$/i, maxLength: 8 },
+  pair_hunter_blacklist: { kind: "text", maxLength: 2000 },
+  pair_hunter_weight_volatility: { kind: "num", min: 0, max: 1 },
+  pair_hunter_weight_trend: { kind: "num", min: 0, max: 1 },
+  pair_hunter_weight_setup: { kind: "num", min: 0, max: 1 },
+};
+
+function applyAdaptiveRiskFields(
+  body: Record<string, any>,
+  updateData: Record<string, any>
+): { error?: string } {
+  for (const [key, spec] of Object.entries(ADAPTIVE_RISK_FIELDS)) {
+    const value = body[key];
+    if (value === undefined) continue;
+
+    if (spec.kind === "bool") {
+      updateData[key] = Boolean(value);
+      continue;
+    }
+
+    if (spec.kind === "enum") {
+      const str = String(value).trim();
+      if (!spec.values.includes(str)) {
+        return { error: `${key} must be one of: ${spec.values.join(", ")}` };
+      }
+      updateData[key] = str;
+      continue;
+    }
+
+    if (spec.kind === "text") {
+      const str = String(value).trim();
+      if (spec.maxLength && str.length > spec.maxLength) {
+        return { error: `${key} must be at most ${spec.maxLength} characters` };
+      }
+      if (spec.pattern && str !== "" && !spec.pattern.test(str)) {
+        return { error: `${key} has an invalid format: "${str}"` };
+      }
+      updateData[key] = str;
+      continue;
+    }
+
+    // Numeric kinds
+    if (value === null || value === "") {
+      if (spec.kind === "num" && spec.nullable) {
+        updateData[key] = null;
+        continue;
+      }
+      return { error: `${key} cannot be empty` };
+    }
+
+    const num = Number(value);
+    if (!Number.isFinite(num)) {
+      return { error: `${key} must be a number` };
+    }
+    if (num < spec.min || num > spec.max) {
+      return { error: `${key} must be between ${spec.min} and ${spec.max}` };
+    }
+    updateData[key] = spec.kind === "int" ? Math.round(num) : num;
+  }
+
+  // Cross-field checks the individual ranges cannot catch.
+  const minStop = updateData.min_stop_price_pct;
+  const maxStop = updateData.max_stop_price_pct;
+  if (minStop !== undefined && maxStop !== undefined && Number(minStop) >= Number(maxStop)) {
+    return { error: "min_stop_price_pct must be less than max_stop_price_pct" };
+  }
+
+  const fastEma = updateData.htf_trend_fast_ema;
+  const slowEma = updateData.htf_trend_slow_ema;
+  if (fastEma !== undefined && slowEma !== undefined && Number(fastEma) >= Number(slowEma)) {
+    return { error: "htf_trend_fast_ema must be less than htf_trend_slow_ema" };
+  }
+
+  if (typeof updateData.profit_ladder === "string" && updateData.profit_ladder !== "") {
+    const total = updateData.profit_ladder
+      .split(",")
+      .reduce((sum: number, rung: string) => sum + Number(rung.split(":")[1] ?? 0), 0);
+    if (total > 100) {
+      return { error: `profit_ladder rungs total ${total}% of the position; must not exceed 100%` };
+    }
+  }
+
+  return {};
+}
+
 /**
  * GET /api/trading/settings
  * Fetch current trading settings (leverage, TP%, SL%)
@@ -66,6 +217,58 @@ export async function GET() {
       stop_loss_usd: null,
       take_profit_strict_enforcement: false,
       enable_stop_loss_orders: true,
+      // Volatility-adaptive exits
+      exit_mode: "atr",
+      sl_atr_mult: 2.5,
+      tp_rr_ratio: 2.0,
+      atr_period: 14,
+      min_stop_price_pct: 0.8,
+      max_stop_price_pct: 5.0,
+      // Risk-based sizing
+      risk_per_trade_usd: null,
+      risk_per_trade_pct: 0.5,
+      max_notional_per_position: null,
+      min_notional_per_position: 100,
+      // Scale-out ladder
+      enable_profit_ladder: true,
+      profit_ladder: "1.0:50,2.0:30",
+      breakeven_after_first_fill: true,
+      enable_breakeven_stop: true,
+      breakeven_trigger_r: 1.0,
+      trailing_stop_activation_r: 1.5,
+      trailing_stop_distance_r: 1.0,
+      // Re-entry control
+      reentry_cooldown_minutes: 45,
+      loss_reentry_cooldown_minutes: 90,
+      block_direction_flip: true,
+      // Circuit breakers
+      max_daily_loss_usd: null,
+      max_daily_loss_pct: 3.0,
+      max_consecutive_losses: 4,
+      loss_streak_pause_minutes: 120,
+      // Higher-timeframe trend filter
+      enable_htf_trend_filter: true,
+      htf_trend_timeframe: "1h",
+      htf_trend_fast_ema: 20,
+      htf_trend_slow_ema: 50,
+      htf_trend_min_separation_pct: 0.15,
+      htf_block_when_flat: true,
+      // Analysis timeframes
+      intraday_timeframe: "15m",
+      longterm_timeframe: "4h",
+      // Pair hunter
+      pair_hunter_min_volatility: 1.0,
+      pair_hunter_ideal_volatility: 2.0,
+      pair_hunter_max_volatility: 3.5,
+      pair_hunter_min_volume_24h: 50000000,
+      pair_hunter_min_trend_strength: 25,
+      pair_hunter_min_price: 0.01,
+      pair_hunter_max_spread_pct: 0.5,
+      pair_hunter_timeframe: "15m",
+      pair_hunter_blacklist: "SHIB PEPE FLOKI BONK WIF MEME DOGE 1000SATS LUNA FTT",
+      pair_hunter_weight_volatility: 0.25,
+      pair_hunter_weight_trend: 0.4,
+      pair_hunter_weight_setup: 0.35,
       updated_at: new Date().toISOString(),
     };
 
@@ -149,9 +352,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (stop_loss_percent !== undefined && (stop_loss_percent < 0.1 || stop_loss_percent > 50)) {
+    if (stop_loss_percent !== undefined && (stop_loss_percent < 0.1 || stop_loss_percent > 100)) {
       return NextResponse.json(
-        { error: "Stop loss percent must be between 0.1 and 50" },
+        { error: "Stop loss percent must be between 0.1 and 100" },
         { status: 400 }
       );
     }
@@ -184,9 +387,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (position_sizing_mode !== undefined && !["auto", "fixed", "target_profit", "margin"].includes(position_sizing_mode)) {
+    if (position_sizing_mode !== undefined && !["auto", "fixed", "target_profit", "margin", "risk"].includes(position_sizing_mode)) {
       return NextResponse.json(
-        { error: "Position sizing mode must be 'auto', 'fixed', 'target_profit', or 'margin'" },
+        { error: "Position sizing mode must be 'auto', 'fixed', 'target_profit', 'margin', or 'risk'" },
         { status: 400 }
       );
     }
@@ -213,9 +416,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (exchange !== undefined && !["binance", "aster"].includes(exchange)) {
+    if (exchange !== undefined && !["binance", "aster", "okx", "ig", "alpaca"].includes(exchange)) {
       return NextResponse.json(
-        { error: "Exchange must be 'binance' or 'aster'" },
+        { error: "Exchange must be 'binance', 'aster', 'okx', 'ig', or 'alpaca'" },
         { status: 400 }
       );
     }
@@ -265,6 +468,13 @@ export async function POST(req: NextRequest) {
     if (stop_loss_usd !== undefined) updateData.stop_loss_usd = stop_loss_usd === null || stop_loss_usd === "" ? null : Number(stop_loss_usd);
     if (take_profit_strict_enforcement !== undefined) updateData.take_profit_strict_enforcement = Boolean(take_profit_strict_enforcement);
     if (enable_stop_loss_orders !== undefined) updateData.enable_stop_loss_orders = Boolean(enable_stop_loss_orders);
+
+    // Adaptive risk fields. Declared as a table so adding a knob does not mean adding
+    // three more near-identical blocks; ranges are enforced here rather than in the agent.
+    const applied = applyAdaptiveRiskFields(body, updateData);
+    if (applied.error) {
+      return NextResponse.json({ error: applied.error }, { status: 400 });
+    }
 
     // Upsert settings
     const { data, error } = await supabase

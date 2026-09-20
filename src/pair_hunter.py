@@ -26,16 +26,19 @@ except ImportError:
         ENHANCED_AVAILABLE = False
         logger.warning("Enhanced Pair Hunter not available, using basic implementation")
 
-# Blacklist - known scam/low-quality / extreme-vol meme coins
-SCAM_BLACKLIST = {
-    'SHIB', 'PEPE', 'FLOKI', 'BONK', 'WIF', 'MEME', 'DOGE', '1000SATS',  # Meme / hyper-vol
-    'LUNA', 'FTT',  # Dead projects
-}
-
-# Minimum requirements for consideration
+# Fallbacks only — the live values come from CONFIG so they stay tunable without a redeploy.
+DEFAULT_BLACKLIST = "SHIB PEPE FLOKI BONK WIF MEME DOGE 1000SATS LUNA FTT"
 MIN_VOLUME_24H = 10_000_000  # $10M daily volume
 MIN_PRICE = 0.01  # Avoid sub-penny coins
 MAX_SPREAD_PCT = 0.5  # Max 0.5% bid-ask spread
+
+
+def get_blacklist() -> set:
+    """Assets never to trade, from PAIR_HUNTER_BLACKLIST (space or comma separated)."""
+    from src.config_loader import CONFIG
+
+    raw = CONFIG.get("pair_hunter_blacklist") or DEFAULT_BLACKLIST
+    return {token.strip().upper() for token in str(raw).replace(",", " ").split() if token.strip()}
 
 
 class PairHunter:
@@ -57,7 +60,7 @@ class PairHunter:
             self._use_enhanced = False
             logger.info(f"Pair Hunter initialized with BASIC mode (top_n={top_n})")
     
-    async def hunt_pairs(self, min_volatility: float = 2.0, timeframe: str = '5m') -> List[str]:
+    async def hunt_pairs(self, min_volatility: float = None, timeframe: str = None) -> List[str]:
         """
         Hunt for best trading pairs
         
@@ -68,6 +71,13 @@ class PairHunter:
         Returns:
             List of asset symbols (e.g., ['BTC', 'ETH', 'SOL'])
         """
+        from src.config_loader import CONFIG
+
+        if min_volatility is None:
+            min_volatility = float(CONFIG.get("pair_hunter_min_volatility", 1.0) or 1.0)
+        if timeframe is None:
+            timeframe = str(CONFIG.get("pair_hunter_timeframe", "15m") or "15m")
+
         # Check if we should use enhanced version
         if self._use_enhanced and not self.exchange:
             return await self._hunt_enhanced()
@@ -150,8 +160,10 @@ class PairHunter:
     
     def _get_assets_fallback(self) -> List[str]:
         """Get ASSETS from environment as fallback"""
-        assets_str = os.getenv('ASSETS', 'BTC ETH SOL BNB ZEC')
-        assets = [a.strip() for a in assets_str.split() if a.strip()]
+        from src.config_loader import CONFIG
+
+        assets_str = CONFIG.get('assets') or os.getenv('ASSETS', '')
+        assets = [a.strip() for a in str(assets_str).replace(',', ' ').split() if a.strip()]
         logger.info(f"Using ASSETS fallback: {assets}")
         return assets
     
@@ -165,6 +177,7 @@ class PairHunter:
             volume_map = {t['symbol']: float(t.get('volume', 0)) * float(t.get('weightedAvgPrice', 0)) 
                          for t in tickers}
             
+            blacklist = get_blacklist()
             pairs = []
             for symbol_info in exchange_info.get('symbols', []):
                 symbol = symbol_info['symbol']
@@ -176,7 +189,7 @@ class PairHunter:
                 asset = symbol.replace('USDT', '')
                 
                 # Skip blacklisted
-                if asset in SCAM_BLACKLIST:
+                if asset in blacklist:
                     continue
                 
                 volume = volume_map.get(symbol, 0)
@@ -200,6 +213,7 @@ class PairHunter:
 
         qualified = []
         min_volume = float(CONFIG.get("pair_hunter_min_volume_24h", MIN_VOLUME_24H) or MIN_VOLUME_24H)
+        min_price = float(CONFIG.get("pair_hunter_min_price", MIN_PRICE) or MIN_PRICE)
 
         for pair in pairs:
             # Volume check — thin books cost more in spread than the edge is worth
@@ -207,7 +221,7 @@ class PairHunter:
                 continue
             
             # Price check (avoid sub-penny)
-            if pair['price'] < MIN_PRICE:
+            if pair['price'] < min_price:
                 continue
             
             qualified.append(pair)
@@ -223,6 +237,9 @@ class PairHunter:
         max_vol = float(CONFIG.get("pair_hunter_max_volatility", 6.0) or 6.0)
         ideal_vol = float(CONFIG.get("pair_hunter_ideal_volatility", 3.0) or 3.0)
         min_trend = float(CONFIG.get("pair_hunter_min_trend_strength", 25.0) or 25.0)
+        w_vol = float(CONFIG.get("pair_hunter_weight_volatility", 0.25) or 0.25)
+        w_trend = float(CONFIG.get("pair_hunter_weight_trend", 0.40) or 0.40)
+        w_setup = float(CONFIG.get("pair_hunter_weight_setup", 0.35) or 0.35)
         
         for pair in pairs:
             try:
@@ -259,9 +276,9 @@ class PairHunter:
                 
                 # Prefer trend + setup over raw heat
                 score = (
-                    vol_score * 0.25 +
-                    trend_strength * 0.40 +
-                    setup_quality * 0.35
+                    vol_score * w_vol +
+                    trend_strength * w_trend +
+                    setup_quality * w_setup
                 )
                 
                 scored.append({
@@ -352,7 +369,7 @@ class PairHunter:
 async def get_best_pairs(
     exchange_client=None,
     top_n: int = 7,
-    min_volatility: float = 2.0,
+    min_volatility: float = None,
     use_enhanced: bool = True
 ) -> List[str]:
     """
@@ -367,8 +384,13 @@ async def get_best_pairs(
     Returns:
         List of asset symbols
     """
+    from src.config_loader import CONFIG
+
+    if min_volatility is None:
+        min_volatility = float(CONFIG.get('pair_hunter_min_volatility', 1.0) or 1.0)
+
     # Check if enhanced hunting is enabled via environment
-    if os.getenv('ENABLE_PAIR_HUNTER', 'false').lower() == 'true' and use_enhanced:
+    if CONFIG.get('enable_pair_hunter', False) and use_enhanced:
         # Use enhanced mode (Binance-based)
         hunter = PairHunter(exchange_client=None, top_n=top_n)
         return await hunter.hunt_pairs(min_volatility=min_volatility)
@@ -378,5 +400,5 @@ async def get_best_pairs(
         return await hunter.hunt_pairs(min_volatility=min_volatility)
     else:
         # Fallback to ASSETS
-        assets_str = os.getenv('ASSETS', 'BTC ETH SOL BNB ZEC')
-        return [a.strip() for a in assets_str.split() if a.strip()][:top_n]
+        assets_str = CONFIG.get('assets') or os.getenv('ASSETS', '')
+        return [a.strip() for a in str(assets_str).replace(',', ' ').split() if a.strip()][:top_n]

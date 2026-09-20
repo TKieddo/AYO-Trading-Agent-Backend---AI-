@@ -104,6 +104,26 @@ async def get_trading_settings() -> Dict[str, Any]:
                         "breakeven_trigger_r": float(data.get("breakeven_trigger_r", CONFIG.get("breakeven_trigger_r", 1.0))),
                         "trailing_stop_activation_r": float(data.get("trailing_stop_activation_r", CONFIG.get("trailing_stop_activation_r", 1.0))),
                         "trailing_stop_distance_r": float(data.get("trailing_stop_distance_r", CONFIG.get("trailing_stop_distance_r", 1.0))),
+                        "min_notional_per_position": data.get("min_notional_per_position", CONFIG.get("min_notional_per_position", 100.0)),
+                        # Scale-out ladder
+                        "enable_profit_ladder": bool(data.get("enable_profit_ladder", CONFIG.get("enable_profit_ladder", True))),
+                        "profit_ladder": data.get("profit_ladder", CONFIG.get("profit_ladder", "1.0:50,2.0:30")),
+                        "breakeven_after_first_fill": bool(data.get("breakeven_after_first_fill", CONFIG.get("breakeven_after_first_fill", True))),
+                        # Circuit breakers
+                        "max_daily_loss_usd": data.get("max_daily_loss_usd", CONFIG.get("max_daily_loss_usd")),
+                        "max_daily_loss_pct": float(data.get("max_daily_loss_pct", CONFIG.get("max_daily_loss_pct", 3.0)) or 0.0),
+                        "max_consecutive_losses": int(data.get("max_consecutive_losses", CONFIG.get("max_consecutive_losses", 4)) or 0),
+                        "loss_streak_pause_minutes": float(data.get("loss_streak_pause_minutes", CONFIG.get("loss_streak_pause_minutes", 120.0)) or 0.0),
+                        # Higher-timeframe trend filter
+                        "enable_htf_trend_filter": bool(data.get("enable_htf_trend_filter", CONFIG.get("enable_htf_trend_filter", True))),
+                        "htf_trend_timeframe": data.get("htf_trend_timeframe", CONFIG.get("htf_trend_timeframe", "1h")),
+                        "htf_trend_fast_ema": int(data.get("htf_trend_fast_ema", CONFIG.get("htf_trend_fast_ema", 20))),
+                        "htf_trend_slow_ema": int(data.get("htf_trend_slow_ema", CONFIG.get("htf_trend_slow_ema", 50))),
+                        "htf_trend_min_separation_pct": float(data.get("htf_trend_min_separation_pct", CONFIG.get("htf_trend_min_separation_pct", 0.15))),
+                        "htf_block_when_flat": bool(data.get("htf_block_when_flat", CONFIG.get("htf_block_when_flat", True))),
+                        # Analysis timeframes
+                        "intraday_timeframe": data.get("intraday_timeframe", CONFIG.get("intraday_timeframe", "15m")),
+                        "longterm_timeframe": data.get("longterm_timeframe", CONFIG.get("longterm_timeframe", "4h")),
                         # Trading configuration
                         "multi_exchange_mode": bool(data.get("multi_exchange_mode", False)),
                         "assets": data.get("assets", "BTC ETH SOL"),
@@ -191,6 +211,26 @@ async def get_trading_settings() -> Dict[str, Any]:
         "breakeven_trigger_r": CONFIG.get("breakeven_trigger_r", 1.0),
         "trailing_stop_activation_r": CONFIG.get("trailing_stop_activation_r", 1.0),
         "trailing_stop_distance_r": CONFIG.get("trailing_stop_distance_r", 1.0),
+        "min_notional_per_position": CONFIG.get("min_notional_per_position", 100.0),
+        # Scale-out ladder
+        "enable_profit_ladder": CONFIG.get("enable_profit_ladder", True),
+        "profit_ladder": CONFIG.get("profit_ladder", "1.0:50,2.0:30"),
+        "breakeven_after_first_fill": CONFIG.get("breakeven_after_first_fill", True),
+        # Circuit breakers
+        "max_daily_loss_usd": CONFIG.get("max_daily_loss_usd"),
+        "max_daily_loss_pct": CONFIG.get("max_daily_loss_pct", 3.0),
+        "max_consecutive_losses": CONFIG.get("max_consecutive_losses", 4),
+        "loss_streak_pause_minutes": CONFIG.get("loss_streak_pause_minutes", 120.0),
+        # Higher-timeframe trend filter
+        "enable_htf_trend_filter": CONFIG.get("enable_htf_trend_filter", True),
+        "htf_trend_timeframe": CONFIG.get("htf_trend_timeframe", "1h"),
+        "htf_trend_fast_ema": CONFIG.get("htf_trend_fast_ema", 20),
+        "htf_trend_slow_ema": CONFIG.get("htf_trend_slow_ema", 50),
+        "htf_trend_min_separation_pct": CONFIG.get("htf_trend_min_separation_pct", 0.15),
+        "htf_block_when_flat": CONFIG.get("htf_block_when_flat", True),
+        # Analysis timeframes
+        "intraday_timeframe": CONFIG.get("intraday_timeframe", "15m"),
+        "longterm_timeframe": CONFIG.get("longterm_timeframe", "4h"),
         # Trading configuration
         "multi_exchange_mode": CONFIG.get("MULTI_EXCHANGE_MODE", False),
         "assets": CONFIG.get("assets") or CONFIG.get("ASSETS", "BTC ETH SOL"),

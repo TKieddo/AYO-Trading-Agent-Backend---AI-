@@ -28,7 +28,8 @@ from src.utils.formatting import format_number as fmt, format_size as fmt_sz
 from src.utils.prompt_utils import json_default, round_or_none, round_series
 from src.utils.trading_settings import get_trading_settings, get_max_leverage_for_asset, calculate_tp_sl_prices, calculate_allocation_usd, calculate_risk_based_allocation
 from src.utils.volatility_stops import ExitPlan, build_exit_plan
-from src.utils import reentry_guard
+from src.utils import reentry_guard, profit_ladder, risk_governor
+from src.utils.trend_filter import check_trend_agreement
 
 load_dotenv()
 
@@ -39,6 +40,9 @@ _EXIT_PLANS: dict[str, ExitPlan] = {}
 # Latest resolved trading settings, refreshed each loop so helpers outside run_loop()
 # (which owns the local `trading_settings`) can still read live values.
 _LIVE_SETTINGS: dict = {}
+
+# Most recent account equity, used to express the daily loss limit as a percentage.
+_LAST_KNOWN_EQUITY: dict = {}
 
 # Store original stdout/stderr BEFORE creating handlers (Railway logging fix)
 # This ensures handlers write to the original streams, not redirected ones
@@ -581,8 +585,11 @@ def main():
         if not key:
             return
 
-        # Start the re-entry cooldown and retire the exit plan for this asset.
+        # Start the re-entry cooldown, fold the result into the session breakers, and
+        # retire the per-position exit/ladder state.
         reentry_guard.record_close(key, pnl_usd, was_long, _LIVE_SETTINGS)
+        risk_governor.record_close(key, pnl_usd, _LIVE_SETTINGS, equity=_LAST_KNOWN_EQUITY.get("value"))
+        profit_ladder.clear(key)
         _EXIT_PLANS.pop(key, None)
         try:
             pnl_usd = float(pnl_usd or 0.0)
@@ -1334,18 +1341,19 @@ def main():
                     oi = await hyperliquid.get_open_interest(asset)
                     funding = await hyperliquid.get_funding_rate(asset)
 
-                    intraday_tf = "5m"
+                    intraday_tf = trading_settings.get("intraday_timeframe") or CONFIG.get("intraday_timeframe", "15m")
+                    longterm_tf = trading_settings.get("longterm_timeframe") or CONFIG.get("longterm_timeframe", "4h")
                     ema_series = taapi.fetch_series("ema", f"{asset}/USDT", intraday_tf, results=10, params={"period": 20}, value_key="value")
                     macd_series = taapi.fetch_series("macd", f"{asset}/USDT", intraday_tf, results=10, value_key="valueMACD")
                     rsi7_series = taapi.fetch_series("rsi", f"{asset}/USDT", intraday_tf, results=10, params={"period": 7}, value_key="value")
                     rsi14_series = taapi.fetch_series("rsi", f"{asset}/USDT", intraday_tf, results=10, params={"period": 14}, value_key="value")
 
-                    lt_ema20 = taapi.fetch_value("ema", f"{asset}/USDT", "4h", params={"period": 20}, key="value")
-                    lt_ema50 = taapi.fetch_value("ema", f"{asset}/USDT", "4h", params={"period": 50}, key="value")
-                    lt_atr3 = taapi.fetch_value("atr", f"{asset}/USDT", "4h", params={"period": 3}, key="value")
-                    lt_atr14 = taapi.fetch_value("atr", f"{asset}/USDT", "4h", params={"period": 14}, key="value")
-                    lt_macd_series = taapi.fetch_series("macd", f"{asset}/USDT", "4h", results=10, value_key="valueMACD")
-                    lt_rsi_series = taapi.fetch_series("rsi", f"{asset}/USDT", "4h", results=10, params={"period": 14}, value_key="value")
+                    lt_ema20 = taapi.fetch_value("ema", f"{asset}/USDT", longterm_tf, params={"period": 20}, key="value")
+                    lt_ema50 = taapi.fetch_value("ema", f"{asset}/USDT", longterm_tf, params={"period": 50}, key="value")
+                    lt_atr3 = taapi.fetch_value("atr", f"{asset}/USDT", longterm_tf, params={"period": 3}, key="value")
+                    lt_atr14 = taapi.fetch_value("atr", f"{asset}/USDT", longterm_tf, params={"period": 14}, key="value")
+                    lt_macd_series = taapi.fetch_series("macd", f"{asset}/USDT", longterm_tf, results=10, value_key="valueMACD")
+                    lt_rsi_series = taapi.fetch_series("rsi", f"{asset}/USDT", longterm_tf, results=10, params={"period": 14}, value_key="value")
 
                     recent_mids = [entry["mid"] for entry in list(price_history.get(asset, []))[-10:]]
                     funding_annualized = round(funding * 24 * 365 * 100, 2) if funding else None
@@ -1395,6 +1403,7 @@ def main():
             trading_settings = await get_trading_settings()
             _LIVE_SETTINGS.clear()
             _LIVE_SETTINGS.update(trading_settings)
+            _LAST_KNOWN_EQUITY["value"] = float(account_value or 0.0) or _LAST_KNOWN_EQUITY.get("value")
             default_leverage = trading_settings["leverage"]
             tp_percent = trading_settings["take_profit_percent"]
             sl_percent = trading_settings["stop_loss_percent"]
@@ -2268,10 +2277,41 @@ def main():
                         * trail_plan.stop_price_pct
                     )
 
+                    # Scale out at the configured R multiples. Banking part of the move is what
+                    # turns a trade that stalls after 1R into a small win instead of a full loss.
+                    if trading_settings.get("enable_profit_ladder", True):
+                        fill = profit_ladder.next_fill(
+                            asset, r_multiple, position_size, trading_settings
+                        )
+                        if fill:
+                            close_size, rung, remaining_pct = fill
+                            try:
+                                if is_long:
+                                    await hyperliquid.place_sell_order(asset, close_size, reduce_only=True)
+                                else:
+                                    await hyperliquid.place_buy_order(asset, close_size, reduce_only=True)
+                                add_event(
+                                    f"💵 Scaled out of {asset}: closed {rung.size_pct:.0f}% "
+                                    f"({close_size:.6f}) at {r_multiple:.2f}R, {remaining_pct:.0f}% still open"
+                                )
+                                position_size = max(position_size - close_size, 0.0)
+                                if position_size > 0:
+                                    # Protective orders were sized for the full position.
+                                    await _ensure_protective_orders(
+                                        asset, is_long, position_size, tp_price, sl_price, trading_settings
+                                    )
+                            except Exception as e:
+                                add_event(f"⚠️  Scale-out failed for {asset} at {r_multiple:.2f}R: {e}")
+
                     # Breakeven: once the trade has paid for itself, stop letting it round-trip.
-                    if trading_settings.get("enable_breakeven_stop", True):
+                    # After a rung fills this is free — the banked profit already covers the risk.
+                    be_after_fill = (
+                        trading_settings.get("breakeven_after_first_fill", True)
+                        and profit_ladder.has_taken_profit(asset)
+                    )
+                    if trading_settings.get("enable_breakeven_stop", True) or be_after_fill:
                         be_trigger = float(trading_settings.get("breakeven_trigger_r", 1.0) or 1.0)
-                        if r_multiple >= be_trigger:
+                        if r_multiple >= be_trigger or be_after_fill:
                             be_price = float(entry_price)
                             improves = (be_price > sl_price) if is_long else (be_price < sl_price)
                             if not sl_price or improves:
@@ -2698,11 +2738,28 @@ def main():
                                     positions = [p for p in positions if p.get("symbol") != asset]
                                 continue
 
-                        # New entry — refuse if this asset was closed recently. Repeatedly flipping
-                        # the same pair in chop was the single largest source of realised losses.
+                        # New entry — three gates, cheapest first.
+
+                        # 1. Session breakers: a daily loss limit or a losing streak pauses
+                        #    new entries while leaving open positions under stop/target control.
+                        governor_ok, governor_reason = risk_governor.check_can_enter(trading_settings)
+                        if not governor_ok:
+                            add_event(f"🚦 ENTRY PAUSED: {governor_reason}")
+                            continue
+
+                        # 2. Re-entry cooldown. Repeatedly flipping the same pair in chop was the
+                        #    single largest source of realised losses.
                         entry_allowed, cooldown_reason = reentry_guard.check_entry(asset, is_buy, trading_settings)
                         if not entry_allowed:
                             add_event(f"⏸️  ENTRY BLOCKED: {cooldown_reason}")
+                            continue
+
+                        # 3. Higher-timeframe agreement, so we stop buying dips in downtrends.
+                        trend_ok, trend_reason = check_trend_agreement(
+                            asset, is_buy, taapi.fetch_value, trading_settings
+                        )
+                        if not trend_ok:
+                            add_event(f"🧭 ENTRY BLOCKED: {trend_reason}")
                             continue
 
                         # Get per-asset leverage (from .env override or default)
@@ -2890,6 +2947,8 @@ def main():
                                     position_exists = True
                                     actual_position_size = pos_size
                                     add_event(f"Position confirmed: {asset} size {actual_position_size}")
+                                    # Anchor the scale-out ladder to the size actually filled.
+                                    profit_ladder.register_position(asset, actual_position_size)
                                     break
                         
                         if not position_exists:
@@ -3621,6 +3680,9 @@ def main():
                 "balance": round(state.get('balance', 0), 2),
                 "account_value": round(state.get('total_value', 0), 2),
                 "positions_count": len(state.get('positions', [])),
+                # Surfaced so the dashboard can explain why no new trades are opening.
+                "risk_governor": risk_governor.status(),
+                "reentry_cooldowns": reentry_guard.active_cooldowns(),
                 "timestamp": datetime.now(timezone.utc).isoformat()
             })
         except Exception as e:

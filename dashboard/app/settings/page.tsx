@@ -1,4 +1,5 @@
 import { TradingSettings } from "@/components/dashboard/TradingSettings";
+import { AdaptiveRiskSettings } from "@/components/dashboard/AdaptiveRiskSettings";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Settings } from "lucide-react";
 
@@ -24,20 +25,9 @@ export default function SettingsPage() {
           <TradingSettings />
         </div>
 
-        {/* Placeholder for future sections */}
         <div>
           <h2 className="text-xl font-semibold text-slate-800 mb-4">Risk Management</h2>
-          <Card>
-            <CardHeader>
-              <CardTitle>Risk Management Settings</CardTitle>
-              <CardDescription>
-                Configure position sizing, maximum drawdown limits, and risk controls.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-slate-500">Coming soon...</p>
-            </CardContent>
-          </Card>
+          <AdaptiveRiskSettings />
         </div>
 
         <div>

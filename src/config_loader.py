@@ -193,10 +193,30 @@ CONFIG = {
     "breakeven_trigger_r": _get_float("BREAKEVEN_TRIGGER_R", 1.0),  # Move to breakeven at X R of profit
     "trailing_stop_activation_pct": _get_float("TRAILING_STOP_ACTIVATION_PCT", 5.0),  # Legacy fixed-mode ROI trigger
     "trailing_stop_distance_pct": _get_float("TRAILING_STOP_DISTANCE_PCT", 3.0),  # Legacy fixed-mode price distance
+    # Partial take-profit ladder, in R multiples: "R:percent_of_original_size, ..."
+    # Banking part of the move at 1R is what converts marginal trades into small wins.
+    "enable_profit_ladder": _get_bool("ENABLE_PROFIT_LADDER", True),
+    "profit_ladder": _get_env("PROFIT_LADDER", "1.0:50,2.0:30"),  # Remainder rides the trailing stop
+    "breakeven_after_first_fill": _get_bool("BREAKEVEN_AFTER_FIRST_FILL", True),  # Stop to entry once a rung fills
     # Re-entry control — prevents the same pair being flipped repeatedly in chop
     "reentry_cooldown_minutes": _get_float("REENTRY_COOLDOWN_MINUTES", 45.0),  # Block re-entry on an asset after a close
     "loss_reentry_cooldown_minutes": _get_float("LOSS_REENTRY_COOLDOWN_MINUTES", 90.0),  # Longer block after a losing close
     "block_direction_flip": _get_bool("BLOCK_DIRECTION_FLIP", True),  # Forbid opposite-side entry during cooldown
+    # Account-level circuit breakers — pause new entries, never touch open positions
+    "max_daily_loss_usd": _get_float("MAX_DAILY_LOSS_USD"),  # Absolute daily realised loss limit (None = use pct)
+    "max_daily_loss_pct": _get_float("MAX_DAILY_LOSS_PCT", 3.0),  # Daily realised loss limit as % of equity
+    "max_consecutive_losses": _get_int("MAX_CONSECUTIVE_LOSSES", 4),  # Pause after this many losses in a row (0 = off)
+    "loss_streak_pause_minutes": _get_float("LOSS_STREAK_PAUSE_MINUTES", 120.0),  # How long a streak pause lasts
+    # Higher-timeframe trend agreement — rejects counter-trend entries and range chop
+    "enable_htf_trend_filter": _get_bool("ENABLE_HTF_TREND_FILTER", True),
+    "htf_trend_timeframe": _get_env("HTF_TREND_TIMEFRAME", "1h"),
+    "htf_trend_fast_ema": _get_int("HTF_TREND_FAST_EMA", 20),
+    "htf_trend_slow_ema": _get_int("HTF_TREND_SLOW_EMA", 50),
+    "htf_trend_min_separation_pct": _get_float("HTF_TREND_MIN_SEPARATION_PCT", 0.15),  # Below this the HTF is a range
+    "htf_block_when_flat": _get_bool("HTF_BLOCK_WHEN_FLAT", True),  # Skip entries while the HTF is flat
+    # Analysis timeframes (previously hardcoded in the market-data builder)
+    "intraday_timeframe": _get_env("INTRADAY_TIMEFRAME", "15m"),
+    "longterm_timeframe": _get_env("LONGTERM_TIMEFRAME", "4h"),
     "trading_enabled": _get_bool("TRADING_ENABLED", True),  # Enable/disable trading (when False, skips new entries but still monitors/closes positions)
     "max_position_hold_hours": _get_float("MAX_POSITION_HOLD_HOURS", 24.0),  # Maximum hours to hold a position
     "enable_drawdown_protection": _get_bool("ENABLE_DRAWDOWN_PROTECTION", True),  # Enable drawdown protection
@@ -215,6 +235,16 @@ CONFIG = {
     "pair_hunter_ideal_volatility": _get_float("PAIR_HUNTER_IDEAL_VOLATILITY", 2.0),  # Sweet-spot ATR% for scoring
     "pair_hunter_min_volume_24h": _get_float("PAIR_HUNTER_MIN_VOLUME_24H", 50_000_000.0),  # Liquidity floor (USD)
     "pair_hunter_min_trend_strength": _get_float("PAIR_HUNTER_MIN_TREND_STRENGTH", 25.0),  # Reject chop below this
+    "pair_hunter_min_price": _get_float("PAIR_HUNTER_MIN_PRICE", 0.01),  # Avoid sub-penny tick-size noise
+    "pair_hunter_max_spread_pct": _get_float("PAIR_HUNTER_MAX_SPREAD_PCT", 0.5),  # Max acceptable bid-ask spread
+    "pair_hunter_timeframe": _get_env("PAIR_HUNTER_TIMEFRAME", "15m"),  # Timeframe used for scoring candles
+    "pair_hunter_blacklist": _get_env(
+        "PAIR_HUNTER_BLACKLIST",
+        "SHIB PEPE FLOKI BONK WIF MEME DOGE 1000SATS LUNA FTT",
+    ),  # Space/comma separated assets never to trade
+    "pair_hunter_weight_volatility": _get_float("PAIR_HUNTER_WEIGHT_VOLATILITY", 0.25),
+    "pair_hunter_weight_trend": _get_float("PAIR_HUNTER_WEIGHT_TREND", 0.40),
+    "pair_hunter_weight_setup": _get_float("PAIR_HUNTER_WEIGHT_SETUP", 0.35),
     "pair_hunter_max_analyze_assets": _get_int("PAIR_HUNTER_MAX_ANALYZE_ASSETS", 8),  # Cap on assets passed to LLM per cycle
     "pair_hunter_perf_min_trades": _get_int("PAIR_HUNTER_PERF_MIN_TRADES", 3),  # Minimum completed trades before using performance score
     "pair_hunter_perf_filter_min_trades": _get_int("PAIR_HUNTER_PERF_FILTER_MIN_TRADES", 6),  # Minimum completed trades before filtering weak pairs
