@@ -85,7 +85,25 @@ async def get_trading_settings() -> Dict[str, Any]:
                         "allocation_per_position": data.get("allocation_per_position"),
                         "margin_per_position": float(margin_per_pos) if margin_per_pos is not None else None,
                         "max_positions": int(data.get("max_positions", 6)),
-                        "position_sizing_mode": data.get("position_sizing_mode", "auto"),
+                        "position_sizing_mode": data.get("position_sizing_mode", CONFIG.get("position_sizing_mode", "auto")),
+                        "risk_per_trade_usd": data.get("risk_per_trade_usd", CONFIG.get("risk_per_trade_usd")),
+                        "risk_per_trade_pct": float(data.get("risk_per_trade_pct", CONFIG.get("risk_per_trade_pct", 0.5))),
+                        "max_notional_per_position": data.get("max_notional_per_position", CONFIG.get("max_notional_per_position")),
+                        # Volatility-adaptive exits
+                        "exit_mode": data.get("exit_mode", CONFIG.get("exit_mode", "fixed")),
+                        "sl_atr_mult": float(data.get("sl_atr_mult", CONFIG.get("sl_atr_mult", 2.0))),
+                        "tp_rr_ratio": float(data.get("tp_rr_ratio", CONFIG.get("tp_rr_ratio", 2.5))),
+                        "atr_period": int(data.get("atr_period", CONFIG.get("atr_period", 14))),
+                        "min_stop_price_pct": float(data.get("min_stop_price_pct", CONFIG.get("min_stop_price_pct", 0.6))),
+                        "max_stop_price_pct": float(data.get("max_stop_price_pct", CONFIG.get("max_stop_price_pct", 4.0))),
+                        # Re-entry control
+                        "reentry_cooldown_minutes": float(data.get("reentry_cooldown_minutes", CONFIG.get("reentry_cooldown_minutes", 45.0))),
+                        "loss_reentry_cooldown_minutes": float(data.get("loss_reentry_cooldown_minutes", CONFIG.get("loss_reentry_cooldown_minutes", 90.0))),
+                        "block_direction_flip": bool(data.get("block_direction_flip", CONFIG.get("block_direction_flip", True))),
+                        "enable_breakeven_stop": bool(data.get("enable_breakeven_stop", CONFIG.get("enable_breakeven_stop", True))),
+                        "breakeven_trigger_r": float(data.get("breakeven_trigger_r", CONFIG.get("breakeven_trigger_r", 1.0))),
+                        "trailing_stop_activation_r": float(data.get("trailing_stop_activation_r", CONFIG.get("trailing_stop_activation_r", 1.0))),
+                        "trailing_stop_distance_r": float(data.get("trailing_stop_distance_r", CONFIG.get("trailing_stop_distance_r", 1.0))),
                         # Trading configuration
                         "multi_exchange_mode": bool(data.get("multi_exchange_mode", False)),
                         "assets": data.get("assets", "BTC ETH SOL"),
@@ -155,6 +173,24 @@ async def get_trading_settings() -> Dict[str, Any]:
         "margin_per_position": float(margin_per_pos) if margin_per_pos is not None else None,
         "max_positions": CONFIG.get("max_positions", 6),
         "position_sizing_mode": CONFIG.get("position_sizing_mode", "auto"),
+        "risk_per_trade_usd": CONFIG.get("risk_per_trade_usd"),
+        "risk_per_trade_pct": CONFIG.get("risk_per_trade_pct", 0.5),
+        "max_notional_per_position": CONFIG.get("max_notional_per_position"),
+        # Volatility-adaptive exits
+        "exit_mode": CONFIG.get("exit_mode", "fixed"),
+        "sl_atr_mult": CONFIG.get("sl_atr_mult", 2.0),
+        "tp_rr_ratio": CONFIG.get("tp_rr_ratio", 2.5),
+        "atr_period": CONFIG.get("atr_period", 14),
+        "min_stop_price_pct": CONFIG.get("min_stop_price_pct", 0.6),
+        "max_stop_price_pct": CONFIG.get("max_stop_price_pct", 4.0),
+        # Re-entry control
+        "reentry_cooldown_minutes": CONFIG.get("reentry_cooldown_minutes", 45.0),
+        "loss_reentry_cooldown_minutes": CONFIG.get("loss_reentry_cooldown_minutes", 90.0),
+        "block_direction_flip": CONFIG.get("block_direction_flip", True),
+        "enable_breakeven_stop": CONFIG.get("enable_breakeven_stop", True),
+        "breakeven_trigger_r": CONFIG.get("breakeven_trigger_r", 1.0),
+        "trailing_stop_activation_r": CONFIG.get("trailing_stop_activation_r", 1.0),
+        "trailing_stop_distance_r": CONFIG.get("trailing_stop_distance_r", 1.0),
         # Trading configuration
         "multi_exchange_mode": CONFIG.get("MULTI_EXCHANGE_MODE", False),
         "assets": CONFIG.get("assets") or CONFIG.get("ASSETS", "BTC ETH SOL"),
@@ -262,11 +298,69 @@ def calculate_tp_sl_prices(
     return (tp_price, sl_price)
 
 
+def calculate_risk_based_allocation(
+    trading_settings: Dict[str, Any],
+    available_balance: float,
+    stop_price_pct: float,
+    leverage: int,
+) -> float:
+    """Margin to commit so that hitting the stop loses exactly the configured risk amount.
+
+    Notional is solved from the stop distance (``risk / stop_pct``), then divided by leverage
+    to get the margin. This keeps dollar risk constant whether the stop is 0.8% or 3% wide.
+    """
+    leverage = max(int(leverage or 1), 1)
+    stop_price_pct = max(float(stop_price_pct or 0.0), 0.05)
+
+    risk_usd = trading_settings.get("risk_per_trade_usd")
+    if risk_usd is None:
+        risk_pct = float(trading_settings.get("risk_per_trade_pct") or CONFIG.get("risk_per_trade_pct", 0.5) or 0.5)
+        risk_usd = available_balance * (risk_pct / 100.0)
+    risk_usd = max(float(risk_usd), 0.0)
+
+    required_notional = risk_usd / (stop_price_pct / 100.0)
+
+    max_notional = trading_settings.get("max_notional_per_position") or CONFIG.get("max_notional_per_position")
+    if max_notional:
+        required_notional = min(required_notional, float(max_notional))
+
+    # A very tight stop can size the position below the exchange's minimum order, which would
+    # round to zero contracts. Lift it to the floor and say so — actual risk exceeds the target.
+    min_notional = float(
+        trading_settings.get("min_notional_per_position")
+        or CONFIG.get("min_notional_per_position", 100.0)
+        or 0.0
+    )
+    if min_notional and required_notional < min_notional:
+        actual_risk = min_notional * (stop_price_pct / 100.0)
+        logging.warning(
+            f"⚠️  Risk sizing produced ${required_notional:.2f} notional, below the "
+            f"${min_notional:.2f} minimum. Raising to floor — this trade risks "
+            f"${actual_risk:.2f} instead of ${risk_usd:.2f}."
+        )
+        required_notional = min_notional
+
+    margin = required_notional / leverage
+
+    # Never commit more margin than a fair share of the balance across concurrent slots.
+    max_positions = max(int(trading_settings.get("max_positions", 6) or 6), 1)
+    margin_ceiling = available_balance / max_positions
+    if margin > margin_ceiling:
+        logging.warning(
+            f"⚠️  Risk sizing wants ${margin:.2f} margin (stop {stop_price_pct:.2f}%, risk ${risk_usd:.2f}) "
+            f"but slot ceiling is ${margin_ceiling:.2f}. Capping — effective risk will be lower."
+        )
+        margin = margin_ceiling
+
+    return max(min(margin, available_balance), 0.0)
+
+
 def calculate_allocation_usd(
     trading_settings: Dict[str, Any],
     available_balance: float,
     current_price: float,
-    leverage: int
+    leverage: int,
+    stop_price_pct: float | None = None,
 ) -> float:
     """Calculate allocation in USD based on position sizing settings.
     
@@ -278,11 +372,19 @@ def calculate_allocation_usd(
         available_balance: Available balance in USD
         current_price: Current price of the asset
         leverage: Leverage to be used for this trade
+        stop_price_pct: Stop distance as % of price, required for "risk" sizing mode
         
     Returns:
         Allocation in USD for this position (guaranteed to meet minimum requirement)
     """
     position_sizing_mode = trading_settings.get("position_sizing_mode", "auto")
+
+    if position_sizing_mode == "risk":
+        if stop_price_pct and stop_price_pct > 0:
+            return calculate_risk_based_allocation(
+                trading_settings, available_balance, stop_price_pct, leverage
+            )
+        logging.warning("⚠️  Risk sizing mode selected but no stop distance supplied; falling back to margin/auto.")
     target_profit = trading_settings.get("target_profit_per_1pct_move", 1.0)
     fixed_allocation = trading_settings.get("allocation_per_position")
     margin_per_position = trading_settings.get("margin_per_position")

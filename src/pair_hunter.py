@@ -196,11 +196,14 @@ class PairHunter:
     
     async def _filter_basic_criteria(self, pairs: List[Dict]) -> List[Dict]:
         """Filter by volume, price, blacklist"""
+        from src.config_loader import CONFIG
+
         qualified = []
-        
+        min_volume = float(CONFIG.get("pair_hunter_min_volume_24h", MIN_VOLUME_24H) or MIN_VOLUME_24H)
+
         for pair in pairs:
-            # Volume check
-            if pair['volume_24h'] < MIN_VOLUME_24H:
+            # Volume check — thin books cost more in spread than the edge is worth
+            if pair['volume_24h'] < min_volume:
                 continue
             
             # Price check (avoid sub-penny)
@@ -219,6 +222,7 @@ class PairHunter:
         min_vol = float(CONFIG.get("pair_hunter_min_volatility", 1.5) or 1.5)
         max_vol = float(CONFIG.get("pair_hunter_max_volatility", 6.0) or 6.0)
         ideal_vol = float(CONFIG.get("pair_hunter_ideal_volatility", 3.0) or 3.0)
+        min_trend = float(CONFIG.get("pair_hunter_min_trend_strength", 25.0) or 25.0)
         
         for pair in pairs:
             try:
@@ -242,6 +246,12 @@ class PairHunter:
                     continue
 
                 trend_strength = self._calculate_trend(ohlcv)
+                if trend_strength < min_trend:
+                    logger.debug(
+                        f"Skip {pair.get('asset')}: trend={trend_strength:.1f} below {min_trend} (chop)"
+                    )
+                    continue
+
                 setup_quality = self._evaluate_setup(ohlcv)
                 # Sweet-spot vol: peak at ideal_vol, fade toward min/max (0-100 scale)
                 span = max(ideal_vol - min_vol, max_vol - ideal_vol, 0.5)

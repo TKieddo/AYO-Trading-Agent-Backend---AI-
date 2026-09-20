@@ -152,7 +152,12 @@ CONFIG = {
     "allocation_per_position": _get_float("ALLOCATION_PER_POSITION"),  # Fixed allocation per position (None = auto)
     "margin_per_position": _get_float("MARGIN_PER_POSITION"),  # Margin per position when position_sizing_mode is "margin" (None = not set)
     "max_positions": _get_int("MAX_POSITIONS", 6),  # Maximum concurrent positions
-    "position_sizing_mode": _get_env("POSITION_SIZING_MODE", "auto"),  # "auto", "fixed", "target_profit", or "margin"
+    "position_sizing_mode": _get_env("POSITION_SIZING_MODE", "auto"),  # "auto", "fixed", "target_profit", "margin", or "risk"
+    # Risk-based sizing: notional is solved from the stop distance so every trade risks the same amount.
+    "risk_per_trade_usd": _get_float("RISK_PER_TRADE_USD"),  # Fixed USD risk per trade (takes precedence)
+    "risk_per_trade_pct": _get_float("RISK_PER_TRADE_PCT", 0.5),  # Risk per trade as % of equity when USD not set
+    "max_notional_per_position": _get_float("MAX_NOTIONAL_PER_POSITION"),  # Optional hard cap on notional exposure
+    "min_notional_per_position": _get_float("MIN_NOTIONAL_PER_POSITION", 100.0),  # Floor so risk sizing never emits a sub-minimum order
     # LLM via DeepSeek API (replaces OpenRouter)
     "deepseek_api_key": _get_env("DEEPSEEK_API_KEY", required=True),
     "deepseek_base_url": _get_env("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
@@ -172,10 +177,26 @@ CONFIG = {
     "scalping_tp_percent": _get_float("SCALPING_TP_PERCENT", 5.0),  # Take profit percentage for scalping (e.g., 5.0 = 5%) - close immediately at 5%
     "scalping_sl_percent": _get_float("SCALPING_SL_PERCENT", 3.0),  # Stop loss percentage (e.g., 3.0 = 3%) - updated from 0.5%
     "auto_strategy_cache_minutes": _get_int("AUTO_STRATEGY_CACHE_MINUTES", 0),  # 0 = re-evaluate every cycle, >0 = cache for X minutes
+    # Volatility-adaptive exits (ATR-based). When enabled, the fixed TP/SL percentages are
+    # replaced by distances derived from recent ATR, so the stop sits outside normal noise.
+    "exit_mode": _get_env("EXIT_MODE", "fixed"),  # "fixed" (legacy TP/SL %) or "atr"
+    "sl_atr_mult": _get_float("SL_ATR_MULT", 2.0),  # Stop distance = SL_ATR_MULT x ATR%
+    "tp_rr_ratio": _get_float("TP_RR_RATIO", 2.5),  # Target distance = TP_RR_RATIO x stop distance
+    "atr_period": _get_int("ATR_PERIOD", 14),  # ATR lookback for exit sizing
+    "min_stop_price_pct": _get_float("MIN_STOP_PRICE_PCT", 0.6),  # Floor on stop distance (% of price)
+    "max_stop_price_pct": _get_float("MAX_STOP_PRICE_PCT", 4.0),  # Ceiling on stop distance (% of price)
     # Advanced position management
     "enable_trailing_stop": _get_bool("ENABLE_TRAILING_STOP", True),  # Enable trailing stop loss
-    "trailing_stop_activation_pct": _get_float("TRAILING_STOP_ACTIVATION_PCT", 5.0),  # Start trailing after X% profit
-    "trailing_stop_distance_pct": _get_float("TRAILING_STOP_DISTANCE_PCT", 3.0),  # Keep SL X% below peak profit
+    "trailing_stop_activation_r": _get_float("TRAILING_STOP_ACTIVATION_R", 1.0),  # Start trailing after X R of profit
+    "trailing_stop_distance_r": _get_float("TRAILING_STOP_DISTANCE_R", 1.0),  # Trail X R behind peak price
+    "enable_breakeven_stop": _get_bool("ENABLE_BREAKEVEN_STOP", True),  # Move stop to entry once in profit
+    "breakeven_trigger_r": _get_float("BREAKEVEN_TRIGGER_R", 1.0),  # Move to breakeven at X R of profit
+    "trailing_stop_activation_pct": _get_float("TRAILING_STOP_ACTIVATION_PCT", 5.0),  # Legacy fixed-mode ROI trigger
+    "trailing_stop_distance_pct": _get_float("TRAILING_STOP_DISTANCE_PCT", 3.0),  # Legacy fixed-mode price distance
+    # Re-entry control — prevents the same pair being flipped repeatedly in chop
+    "reentry_cooldown_minutes": _get_float("REENTRY_COOLDOWN_MINUTES", 45.0),  # Block re-entry on an asset after a close
+    "loss_reentry_cooldown_minutes": _get_float("LOSS_REENTRY_COOLDOWN_MINUTES", 90.0),  # Longer block after a losing close
+    "block_direction_flip": _get_bool("BLOCK_DIRECTION_FLIP", True),  # Forbid opposite-side entry during cooldown
     "trading_enabled": _get_bool("TRADING_ENABLED", True),  # Enable/disable trading (when False, skips new entries but still monitors/closes positions)
     "max_position_hold_hours": _get_float("MAX_POSITION_HOLD_HOURS", 24.0),  # Maximum hours to hold a position
     "enable_drawdown_protection": _get_bool("ENABLE_DRAWDOWN_PROTECTION", True),  # Enable drawdown protection
@@ -189,9 +210,11 @@ CONFIG = {
     "enable_pair_hunter": _get_bool("ENABLE_PAIR_HUNTER", False),  # Enable automatic pair discovery
     "pair_hunter_top_n": _get_int("PAIR_HUNTER_TOP_N", 5),  # Number of top pairs to hunt
     "pair_hunter_refresh_interval": _get_int("PAIR_HUNTER_REFRESH_INTERVAL", 5),  # Refresh hunt every N loops
-    "pair_hunter_min_volatility": _get_float("PAIR_HUNTER_MIN_VOLATILITY", 1.5),  # Minimum ATR% (too quiet = skip)
-    "pair_hunter_max_volatility": _get_float("PAIR_HUNTER_MAX_VOLATILITY", 6.0),  # Cap hyper-volatile meme-style names
-    "pair_hunter_ideal_volatility": _get_float("PAIR_HUNTER_IDEAL_VOLATILITY", 3.0),  # Sweet-spot ATR% for scoring
+    "pair_hunter_min_volatility": _get_float("PAIR_HUNTER_MIN_VOLATILITY", 1.0),  # Minimum ATR% (too quiet = skip)
+    "pair_hunter_max_volatility": _get_float("PAIR_HUNTER_MAX_VOLATILITY", 3.5),  # Cap hyper-volatile meme-style names
+    "pair_hunter_ideal_volatility": _get_float("PAIR_HUNTER_IDEAL_VOLATILITY", 2.0),  # Sweet-spot ATR% for scoring
+    "pair_hunter_min_volume_24h": _get_float("PAIR_HUNTER_MIN_VOLUME_24H", 50_000_000.0),  # Liquidity floor (USD)
+    "pair_hunter_min_trend_strength": _get_float("PAIR_HUNTER_MIN_TREND_STRENGTH", 25.0),  # Reject chop below this
     "pair_hunter_max_analyze_assets": _get_int("PAIR_HUNTER_MAX_ANALYZE_ASSETS", 8),  # Cap on assets passed to LLM per cycle
     "pair_hunter_perf_min_trades": _get_int("PAIR_HUNTER_PERF_MIN_TRADES", 3),  # Minimum completed trades before using performance score
     "pair_hunter_perf_filter_min_trades": _get_int("PAIR_HUNTER_PERF_FILTER_MIN_TRADES", 6),  # Minimum completed trades before filtering weak pairs

@@ -26,9 +26,19 @@ except ImportError:
     httpx = None  # httpx may not be installed, handle gracefully
 from src.utils.formatting import format_number as fmt, format_size as fmt_sz
 from src.utils.prompt_utils import json_default, round_or_none, round_series
-from src.utils.trading_settings import get_trading_settings, get_max_leverage_for_asset, calculate_tp_sl_prices, calculate_allocation_usd
+from src.utils.trading_settings import get_trading_settings, get_max_leverage_for_asset, calculate_tp_sl_prices, calculate_allocation_usd, calculate_risk_based_allocation
+from src.utils.volatility_stops import ExitPlan, build_exit_plan
+from src.utils import reentry_guard
 
 load_dotenv()
+
+# Exit plan per open position (asset -> ExitPlan), set at entry so the monitor loop enforces
+# the same ATR-derived stop/target the position was sized against.
+_EXIT_PLANS: dict[str, ExitPlan] = {}
+
+# Latest resolved trading settings, refreshed each loop so helpers outside run_loop()
+# (which owns the local `trading_settings`) can still read live values.
+_LIVE_SETTINGS: dict = {}
 
 # Store original stdout/stderr BEFORE creating handlers (Railway logging fix)
 # This ensures handlers write to the original streams, not redirected ones
@@ -565,11 +575,15 @@ def main():
         except Exception as e:
             logging.warning(f"Could not upsert Pair Hunter stat via direct Supabase: {e}")
 
-    async def _record_pair_hunter_outcome(asset: str, pnl_usd: float, pnl_percent: float, close_reason: str):
+    async def _record_pair_hunter_outcome(asset: str, pnl_usd: float, pnl_percent: float, close_reason: str, was_long: bool = True):
         """Update win/loss + expectancy metrics for a closed trade asset."""
         key = (asset or "").upper().strip()
         if not key:
             return
+
+        # Start the re-entry cooldown and retire the exit plan for this asset.
+        reentry_guard.record_close(key, pnl_usd, was_long, _LIVE_SETTINGS)
+        _EXIT_PLANS.pop(key, None)
         try:
             pnl_usd = float(pnl_usd or 0.0)
         except Exception:
@@ -827,6 +841,32 @@ def main():
         except Exception:
             return False
 
+    def _fetch_atr_percent(asset: str, interval: str, current_price: float, period: int = 14):
+        """ATR for `asset` on `interval`, as a percentage of price. None if unavailable."""
+        if not current_price or current_price <= 0:
+            return None
+        try:
+            atr_value = taapi.fetch_value(
+                "atr", f"{asset}/USDT", interval, params={"period": period}, key="value"
+            )
+        except Exception as e:
+            logging.debug(f"ATR fetch failed for {asset} {interval}: {e}")
+            return None
+        if not atr_value or atr_value <= 0:
+            return None
+        return (float(atr_value) / float(current_price)) * 100.0
+
+    def _resolve_exit_plan(asset: str, settings: dict, leverage: float, current_price: float, interval: str):
+        """Build (and cache) the stop/target plan for an asset."""
+        atr_pct = None
+        if str(settings.get("exit_mode", "fixed")).lower() == "atr":
+            atr_pct = _fetch_atr_percent(
+                asset, interval, current_price, int(settings.get("atr_period", 14) or 14)
+            )
+        plan = build_exit_plan(settings, leverage, atr_pct)
+        _EXIT_PLANS[asset.upper()] = plan
+        return plan
+
     def _compute_position_roi_percent(pos: dict, is_long: bool = True, entry_price=None, current_price=None) -> float:
         """Return margin-based ROI%. Prefer exchange ROI fields; never use notional as primary."""
         unrealized_pnl = float(pos.get("unrealized_pnl") or pos.get("pnl") or pos.get("unRealizedProfit") or 0 or 0)
@@ -930,6 +970,7 @@ def main():
                     float(pnl_usd or 0),
                     float(pnl_percent or 0),
                     action_name,
+                    was_long=is_long,
                 )
             except Exception:
                 pass
@@ -1352,6 +1393,8 @@ def main():
             # Fetch trading settings (leverage, TP%, SL%, position sizing)
             # This will use database settings first, then fall back to .env file if database unavailable
             trading_settings = await get_trading_settings()
+            _LIVE_SETTINGS.clear()
+            _LIVE_SETTINGS.update(trading_settings)
             default_leverage = trading_settings["leverage"]
             tp_percent = trading_settings["take_profit_percent"]
             sl_percent = trading_settings["stop_loss_percent"]
@@ -1410,9 +1453,27 @@ def main():
                 
                 # Get stop loss threshold (scalping or regular) — from UI/DB settings
                 effective_sl_percent = scalping_sl_percent if is_scalping else sl_percent
+
+                # ATR mode: the stop is a price distance, so compare the raw price move against
+                # it rather than the leveraged ROI (which triggers ~`leverage` times too early).
+                exit_plan = _EXIT_PLANS.get(asset.upper())
+                atr_stop_active = (
+                    exit_plan is not None
+                    and exit_plan.source == "atr"
+                    and entry_price > 0
+                    and current_price > 0
+                )
+                if atr_stop_active:
+                    effective_sl_percent = exit_plan.stop_price_pct
+                    pnl_percent = (
+                        ((current_price - entry_price) / entry_price) * 100.0 if is_long
+                        else ((entry_price - current_price) / entry_price) * 100.0
+                    )
+
                 # Hard safety cap only when agent manages exits; TP/SL-only trusts UI SL% as-is
-                # (so a wider UI SL for volatile pairs is not silently capped).
-                if agent_manage_exits:
+                # (so a wider UI SL for volatile pairs is not silently capped). The cap is an ROI
+                # figure, so it does not apply to the price-denominated ATR stop.
+                if agent_manage_exits and not atr_stop_active:
                     hard_max_loss_cap_percent = float(trading_settings.get("hard_max_loss_cap_percent", 8.0) or 8.0)
                     if hard_max_loss_cap_percent > 0:
                         effective_sl_percent = min(float(effective_sl_percent or hard_max_loss_cap_percent), hard_max_loss_cap_percent)
@@ -1488,7 +1549,7 @@ def main():
                             "pnl": pnl_usd,
                             "pnl_percent": pnl_percent
                         }) + "\n")
-                    await _record_pair_hunter_outcome(asset, pnl_usd, pnl_percent, "close_stop_loss")
+                    await _record_pair_hunter_outcome(asset, pnl_usd, pnl_percent, "close_stop_loss", was_long=is_long)
                     
                     # Remove from positions list so AI doesn't see it
                     positions = [p for p in positions if p.get('symbol') != asset]
@@ -2001,6 +2062,7 @@ def main():
                                 unrealized_pnl,
                                 pnl_percent,
                                 "close_tp" if tp_hit else "close_sl",
+                                was_long=is_long,
                             )
                         except Exception as e:
                             add_event(f"❌ Failed TP/SL-only close for {asset}: {e}")
@@ -2117,7 +2179,7 @@ def main():
                                         "reason": f"Maximum hold time reached ({hours_open:.1f}h)",
                                         "pnl": unrealized_pnl
                                     }) + "\n")
-                                await _record_pair_hunter_outcome(asset, unrealized_pnl, pnl_percent, "close_max_hold_time")
+                                await _record_pair_hunter_outcome(asset, unrealized_pnl, pnl_percent, "close_max_hold_time", was_long=is_long)
                             except Exception as e:
                                 add_event(f"❌ Failed to close {asset} position (max hold time): {e}")
                             continue  # Skip to next position
@@ -2187,8 +2249,39 @@ def main():
                 enable_trailing = CONFIG.get('enable_trailing_stop', True)
                 trailing_activation_pct = CONFIG.get('trailing_stop_activation_pct', 5.0)
                 trailing_distance_pct = CONFIG.get('trailing_stop_distance_pct', 3.0)
-                
-                if enable_trailing and pnl_percent >= trailing_activation_pct:
+
+                # `pnl_percent` is margin ROI while `trailing_distance_pct` is a price distance.
+                # Mixing them places the stop further from entry as profit grows. In ATR mode both
+                # sides are expressed in R (one R = the stop distance) so the units agree.
+                trail_plan = _EXIT_PLANS.get(asset.upper())
+                trailing_profit_metric = pnl_percent
+                if trail_plan is not None and trail_plan.source == "atr" and entry_price and current_price:
+                    price_move_pct = (
+                        ((current_price - entry_price) / entry_price) * 100.0 if is_long
+                        else ((entry_price - current_price) / entry_price) * 100.0
+                    )
+                    r_multiple = price_move_pct / trail_plan.stop_price_pct
+                    trailing_profit_metric = r_multiple
+                    trailing_activation_pct = float(trading_settings.get("trailing_stop_activation_r", 1.0) or 1.0)
+                    trailing_distance_pct = (
+                        float(trading_settings.get("trailing_stop_distance_r", 1.0) or 1.0)
+                        * trail_plan.stop_price_pct
+                    )
+
+                    # Breakeven: once the trade has paid for itself, stop letting it round-trip.
+                    if trading_settings.get("enable_breakeven_stop", True):
+                        be_trigger = float(trading_settings.get("breakeven_trigger_r", 1.0) or 1.0)
+                        if r_multiple >= be_trigger:
+                            be_price = float(entry_price)
+                            improves = (be_price > sl_price) if is_long else (be_price < sl_price)
+                            if not sl_price or improves:
+                                sl_price = be_price
+                                add_event(
+                                    f"🛡️  Breakeven stop for {asset}: SL moved to entry ${be_price:.4f} "
+                                    f"({r_multiple:.2f}R in profit)"
+                                )
+
+                if enable_trailing and trailing_profit_metric >= trailing_activation_pct:
                     # Calculate new trailing stop price
                     if is_long:
                         new_sl_price = current_price * (1 - trailing_distance_pct / 100)
@@ -2352,7 +2445,17 @@ def main():
                 # Get TP/SL thresholds (scalping or regular)
                 effective_tp_percent = scalping_tp_percent if is_scalping else tp_percent
                 effective_sl_percent = scalping_sl_percent if is_scalping else sl_percent
-                
+
+                # ATR mode: target is a price distance at the configured R multiple of the stop.
+                tp_plan = _EXIT_PLANS.get(asset.upper())
+                if tp_plan is not None and tp_plan.source == "atr" and entry_price and current_price:
+                    effective_tp_percent = tp_plan.target_price_pct
+                    effective_sl_percent = tp_plan.stop_price_pct
+                    pnl_percent = (
+                        ((current_price - entry_price) / entry_price) * 100.0 if is_long
+                        else ((entry_price - current_price) / entry_price) * 100.0
+                    )
+
                 # Always respect UI take-profit % mechanically (both agent and TP/SL-only modes).
                 # Changing TP in the dashboard updates take_profit_percent / scalping_tp_percent.
                 if pnl_percent is not None and pnl_percent >= effective_tp_percent:
@@ -2442,7 +2545,7 @@ def main():
                                 "pnl": (current_price - float(entry_price or current_price)) * position_size if is_long else (float(entry_price or current_price) - current_price) * position_size
                             }) + "\n")
                         realized_pnl = (current_price - float(entry_price or current_price)) * position_size if is_long else (float(entry_price or current_price) - current_price) * position_size
-                        await _record_pair_hunter_outcome(asset, realized_pnl, pnl_percent, f"close_{reason.lower()}")
+                        await _record_pair_hunter_outcome(asset, realized_pnl, pnl_percent, f"close_{reason.lower()}", was_long=is_long)
                     except Exception as e:
                         add_event(f"❌ Failed to close {asset} position: {e}")
                         import traceback
@@ -2594,7 +2697,14 @@ def main():
                                     # Drop from local positions list so later logic does not re-act
                                     positions = [p for p in positions if p.get("symbol") != asset]
                                 continue
-                        
+
+                        # New entry — refuse if this asset was closed recently. Repeatedly flipping
+                        # the same pair in chop was the single largest source of realised losses.
+                        entry_allowed, cooldown_reason = reentry_guard.check_entry(asset, is_buy, trading_settings)
+                        if not entry_allowed:
+                            add_event(f"⏸️  ENTRY BLOCKED: {cooldown_reason}")
+                            continue
+
                         # Get per-asset leverage (from .env override or default)
                         asset_leverage = per_asset_leverage.get(asset, default_leverage)
                         
@@ -2605,7 +2715,10 @@ def main():
                         # ALWAYS USE MARGIN MODE - Strict enforcement of MARGIN_PER_POSITION and per-asset leverage
                         margin_per_position = trading_settings.get("margin_per_position")
                         
-                        # CRITICAL: If margin_per_position is not set, skip trade (strict enforcement)
+                        # CRITICAL: If margin_per_position is not set, skip trade (strict enforcement).
+                        # Risk mode derives its own margin from the stop distance, so it is exempt.
+                        if margin_per_position is None and str(trading_settings.get("position_sizing_mode", "auto")).lower() == "risk":
+                            margin_per_position = available_balance
                         if margin_per_position is None:
                             add_event(f"❌ ERROR: MARGIN_PER_POSITION is not set in settings/.env. Cannot place trade for {asset}. Please configure MARGIN_PER_POSITION.")
                             continue
@@ -2648,9 +2761,42 @@ def main():
                                 leverage_to_use = max_leverage
                                 add_event(f"⚠️  Per-asset leverage {asset_leverage}x exceeds exchange max {max_leverage}x for {asset}, using {max_leverage}x")
                         
-                        # ALWAYS USE MARGIN MODE: STRICTLY enforce MARGIN_PER_POSITION (never exceed user's setting)
-                        # Dual enforcement: System-level (here) and Agent-level (in LLM context)
-                        alloc_usd = min(margin_per_position, available_balance)
+                        # Resolve the exit plan first — in ATR mode the stop distance determines
+                        # both where we exit and (in risk sizing mode) how large the position is.
+                        active_exit_plan = _resolve_exit_plan(
+                            asset,
+                            trading_settings,
+                            leverage_to_use,
+                            current_price,
+                            trading_settings.get("interval") or CONFIG.get("interval") or "15m",
+                        )
+                        if active_exit_plan.source == "atr":
+                            add_event(
+                                f"📐 {asset} exits from ATR {active_exit_plan.atr_pct:.2f}%: "
+                                f"stop {active_exit_plan.stop_price_pct:.2f}% / "
+                                f"target {active_exit_plan.target_price_pct:.2f}% of price"
+                            )
+
+                        sizing_mode = str(trading_settings.get("position_sizing_mode", "auto")).lower()
+                        if sizing_mode == "risk":
+                            # Notional is solved from the stop distance so each trade risks the same USD.
+                            alloc_usd = calculate_risk_based_allocation(
+                                trading_settings,
+                                available_balance,
+                                active_exit_plan.stop_price_pct,
+                                leverage_to_use,
+                            )
+                            risk_usd = alloc_usd * leverage_to_use * (active_exit_plan.stop_price_pct / 100.0)
+                            add_event(
+                                f"🎯 RISK MODE: ${alloc_usd:.2f} margin × {leverage_to_use}x = "
+                                f"${alloc_usd * leverage_to_use:.2f} notional → risking ${risk_usd:.2f} "
+                                f"to make ${risk_usd * (active_exit_plan.target_price_pct / active_exit_plan.stop_price_pct):.2f}"
+                            )
+                            margin_per_position = max(margin_per_position, alloc_usd)
+                        else:
+                            # MARGIN MODE: STRICTLY enforce MARGIN_PER_POSITION (never exceed user's setting)
+                            # Dual enforcement: System-level (here) and Agent-level (in LLM context)
+                            alloc_usd = min(margin_per_position, available_balance)
                         
                         # STRICT VALIDATION: Margin must never exceed MARGIN_PER_POSITION
                         if alloc_usd > margin_per_position:
