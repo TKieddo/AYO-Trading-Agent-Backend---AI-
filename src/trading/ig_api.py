@@ -24,12 +24,18 @@ DEFAULT_EPIC_HINTS = {
     "AUDUSD": "CS.D.AUDUSD.MINI.IP",
     "USDCAD": "CS.D.USDCAD.MINI.IP",
     "USDCHF": "CS.D.USDCHF.MINI.IP",
+    # Inverted aliases still resolve to the standard IG quote (same epic).
+    "CADUSD": "CS.D.USDCAD.MINI.IP",
+    "CHFUSD": "CS.D.USDCHF.MINI.IP",
     "NZDUSD": "CS.D.NZDUSD.MINI.IP",
     "EURGBP": "CS.D.EURGBP.MINI.IP",
     "EURJPY": "CS.D.EURJPY.MINI.IP",
     "GBPJPY": "CS.D.GBPJPY.MINI.IP",
-    "XAUUSD": "CS.D.USCGC.MINI.IP",  # may vary by region
-    "GOLD": "CS.D.USCGC.MINI.IP",
+    # Gold/silver epics vary by account region; search falls back if these 404.
+    "XAUUSD": "CS.D.USCGC.TODAY.IP",
+    "GOLD": "CS.D.USCGC.TODAY.IP",
+    "XAGUSD": "CS.D.USCSI.TODAY.IP",
+    "SILVER": "CS.D.USCSI.TODAY.IP",
 }
 
 
@@ -256,13 +262,20 @@ class IGAPI:
         key = self._normalize_asset(asset)
         if key in self._epic_cache:
             return self._epic_cache[key]
-        if key in DEFAULT_EPIC_HINTS:
+
+        # Prefer live market search first for metals / odd aliases; hints are regional.
+        search_first = key in ("XAUUSD", "XAGUSD", "GOLD", "SILVER", "CADUSD", "CHFUSD")
+        if not search_first and key in DEFAULT_EPIC_HINTS:
             self._epic_cache[key] = DEFAULT_EPIC_HINTS[key]
             return self._epic_cache[key]
 
         # Search IG markets
         try:
-            search_term = asset.replace("/", "")
+            search_term = (
+                "Gold" if key in ("XAUUSD", "GOLD") else
+                "Silver" if key in ("XAGUSD", "SILVER") else
+                asset.replace("/", "")
+            )
             data = self._request("GET", "/markets", params={"searchTerm": search_term}, version="1")
             markets = data.get("markets") or []
             # Prefer FX / CFD mini epics
@@ -274,7 +287,11 @@ class IGAPI:
                 score = 0
                 if key in epic.replace(".", "").upper() or key in name.replace("/", "").replace(" ", ""):
                     score += 5
-                if "MINI" in epic.upper():
+                if key in ("XAUUSD", "GOLD") and "GOLD" in name:
+                    score += 6
+                if key in ("XAGUSD", "SILVER") and "SILVER" in name:
+                    score += 6
+                if "MINI" in epic.upper() or "TODAY" in epic.upper():
                     score += 3
                 if itype in ("CURRENCIES", "FX", "SHARES", "INDICES", "COMMODITIES"):
                     score += 2
@@ -289,6 +306,10 @@ class IGAPI:
                 return epic
         except Exception as e:
             logger.warning(f"IG market search failed for {asset}: {e}")
+
+        if key in DEFAULT_EPIC_HINTS:
+            self._epic_cache[key] = DEFAULT_EPIC_HINTS[key]
+            return self._epic_cache[key]
 
         raise ValueError(
             f"Could not resolve IG epic for {asset}. "
@@ -782,5 +803,5 @@ class IGAPI:
         """Sync helper for indicators (OHLC from IG)."""
         epic = self.resolve_epic(asset)
         # GET /prices/{epic}/{resolution}/{numPoints}
-        data = self._request("GET", f"/prices/{epic}/{resolution}/{numPoints}", version="3")
+        data = self._request("GET", f"/prices/{epic}/{resolution}/{int(num_points)}", version="3")
         return data.get("prices") or []

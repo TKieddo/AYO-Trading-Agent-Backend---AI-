@@ -168,6 +168,19 @@ class TechnicalAnalysisClient:
 
     def _looks_like_forex(self, symbol: str) -> bool:
         base = symbol.replace("/", "").replace("_", "").upper()
+        if base in ("XAUUSD", "XAGUSD", "GOLD", "SILVER") or base.startswith("XAU") or base.startswith("XAG"):
+            return True
+        try:
+            from src.config_loader import CONFIG
+            fx = {
+                p.strip().upper().replace("/", "")
+                for p in str(CONFIG.get("forex_assets") or "").replace(",", " ").split()
+                if p.strip()
+            }
+            if base in fx:
+                return True
+        except Exception:
+            pass
         ccy = ("USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "NZD")
         return len(base) >= 6 and base[:3] in ccy and base[3:6] in ccy
 

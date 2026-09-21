@@ -36,5 +36,8 @@ def is_forex_session_open(now: Optional[datetime] = None) -> bool:
 
 def looks_like_forex(asset: str) -> bool:
     base = (asset or "").replace("/", "").replace("_", "").replace("-", "").upper()
+    metals = ("XAUUSD", "XAGUSD", "GOLD", "SILVER")
+    if base in metals or base.startswith("XAU") or base.startswith("XAG"):
+        return True
     ccy = ("USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "NZD")
     return len(base) >= 6 and base[:3] in ccy and base[3:6] in ccy
