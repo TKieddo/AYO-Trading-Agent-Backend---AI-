@@ -271,6 +271,8 @@ CONFIG = {
     "ALERT_TIMEFRAME": _get_env("ALERT_TIMEFRAME", "5m"),  # Default timeframe (5m, 15m, 1h, etc.)
     # Multi-exchange mode (trade on multiple exchanges simultaneously)
     "MULTI_EXCHANGE_MODE": _get_env("MULTI_EXCHANGE_MODE", "false"),  # Set to "true" to enable
+    # When false, forex pairs are never analyzed/traded (even if FOREX_ASSETS is set).
+    "ENABLE_FOREX": _get_env("ENABLE_FOREX", "true"),
     # Forex-specific overrides (used when MULTI_EXCHANGE_MODE routes pairs to IG)
     "forex_interval": _get_env("FOREX_INTERVAL", "15m"),
     "forex_leverage": _get_int("FOREX_LEVERAGE", 20),

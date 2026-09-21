@@ -149,15 +149,25 @@ class MultiExchangeManager:
                 self.asset_to_exchange[asset_upper] = "alpaca"
                 continue
 
-            # Forex pairs (6+ char currency codes) -> IG
+            # Forex pairs (6+ char currency codes / FOREX_ASSETS) -> IG only.
+            # Never fall back to OKX/Binance — those venues have no EURUSD tickers.
             forex_ccy = ("USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "NZD")
+            metals = ("XAUUSD", "XAGUSD", "GOLD", "SILVER")
             looks_forex = (
                 asset_upper in set(forex_assets)
+                or asset_upper in metals
+                or asset_upper.startswith("XAU")
+                or asset_upper.startswith("XAG")
                 or (len(asset_upper) >= 6 and any(c in asset_upper for c in forex_ccy)
                     and asset_upper[:3] in forex_ccy and asset_upper[3:6] in forex_ccy)
             )
-            if looks_forex and "ig" in self.exchanges:
-                self.asset_to_exchange[asset_upper] = "ig"
+            if looks_forex:
+                if "ig" in self.exchanges:
+                    self.asset_to_exchange[asset_upper] = "ig"
+                else:
+                    logging.warning(
+                        f"⚠️  Skipping {asset_upper}: forex/metal requires IG (not initialized)"
+                    )
                 continue
 
             # Crypto: prefer the configured EXCHANGE, then other futures venues, then Alpaca/IG
@@ -199,6 +209,18 @@ class MultiExchangeManager:
             Exchange instance or None
         """
         asset_upper = asset.upper()
+        forex_ccy = ("USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "NZD")
+        looks_forex = (
+            asset_upper in ("XAUUSD", "XAGUSD", "GOLD", "SILVER")
+            or asset_upper.startswith("XAU")
+            or asset_upper.startswith("XAG")
+            or (len(asset_upper) >= 6 and asset_upper[:3] in forex_ccy and asset_upper[3:6] in forex_ccy)
+        )
+        if looks_forex:
+            if "ig" in self.exchanges:
+                return self.exchanges["ig"]
+            logging.warning(f"⚠️  No IG exchange for forex asset {asset_upper}")
+            return None
         
         # Check explicit mapping first
         if asset_upper in self.asset_to_exchange:
@@ -222,9 +244,6 @@ class MultiExchangeManager:
         elif "alpaca" in self.exchanges:
             logging.debug(f"🔍 Auto-detected {asset_upper} -> Alpaca")
             return self.exchanges["alpaca"]
-        elif "ig" in self.exchanges:
-            logging.debug(f"🔍 Auto-detected {asset_upper} -> IG")
-            return self.exchanges["ig"]
         
         logging.error(f"❌ No exchange found for asset {asset_upper}")
         return None

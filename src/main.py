@@ -166,7 +166,9 @@ def main():
     interval_env = CONFIG.get("interval")
     if (not args.assets or len(args.assets) == 0):
         merged = []
-        for key in ("crypto_assets", "stock_assets", "forex_assets", "assets"):
+        # Forex is IG-only. Do not merge FOREX_ASSETS into the base universe here —
+        # the loop adds them only when IG is live (avoids OKX 51001 spam when IG is down).
+        for key in ("crypto_assets", "stock_assets", "assets"):
             merged.extend(_split_assets(CONFIG.get(key) or ""))
         # Deduplicate while preserving order
         seen = set()
@@ -842,7 +844,13 @@ def main():
     def _ex_for(asset: str):
         """Return the exchange that should handle this asset (IG for forex, OKX for crypto)."""
         if use_multi_exchange and exchange_manager:
-            return exchange_manager.get_exchange_for_asset(asset) or hyperliquid
+            ex = exchange_manager.get_exchange_for_asset(asset)
+            # Do not fall back to OKX for forex/metals when IG is missing.
+            if ex is None and _looks_like_forex(asset):
+                return None
+            return ex or hyperliquid
+        if _looks_like_forex(asset) and str(CONFIG.get("ENABLE_FOREX", "true")).lower() not in ("1", "true", "yes", "on"):
+            return None
         return hyperliquid
 
     def _settings_for_asset(asset: str, base_settings: dict) -> dict:
@@ -1369,12 +1377,28 @@ def main():
                     decision_assets = list(args.assets)
                     add_event("⚠️ Pair Hunter yielded no symbols, using ASSETS fallback.")
 
-            # Always include configured forex pairs when IG is live; skip them while FX is closed.
+            # Always include configured forex pairs when IG is live; skip them while FX is closed
+            # or when IG failed to init (never fall through to OKX for currency pairs).
             forex_assets = []
             raw_fx = CONFIG.get("forex_assets") or ""
             if raw_fx:
                 forex_assets = [a.strip().upper() for a in str(raw_fx).replace(",", " ").split() if a.strip()]
-            if forex_assets and use_multi_exchange and exchange_manager and "ig" in exchange_manager.exchanges:
+            enable_forex = str(CONFIG.get("ENABLE_FOREX", CONFIG.get("enable_forex", "true"))).lower() in (
+                "1", "true", "yes", "on"
+            )
+            ig_ready = bool(
+                use_multi_exchange and exchange_manager and "ig" in exchange_manager.exchanges
+            )
+            # Strip any FX symbols that leaked into the crypto/pair-hunter list.
+            decision_assets = [a for a in decision_assets if not _looks_like_forex(a)]
+            if not enable_forex:
+                add_event("💱 Forex PAUSED (ENABLE_FOREX=false) — crypto only this cycle")
+            elif forex_assets and not ig_ready:
+                add_event(
+                    "💱 Forex PAUSED — IG not available (login/rate-limit). "
+                    "Pairs will not be sent to OKX."
+                )
+            elif forex_assets and ig_ready:
                 if is_forex_session_open():
                     for fx in forex_assets:
                         if fx not in decision_assets:
@@ -1387,10 +1411,9 @@ def main():
                         for p in positions
                         if _looks_like_forex(p.get("symbol") or p.get("coin") or "")
                     }
-                    decision_assets = [
-                        a for a in decision_assets
-                        if (not _looks_like_forex(a)) or a.upper() in open_fx
-                    ]
+                    for fx in open_fx:
+                        if fx not in decision_assets:
+                            decision_assets.append(fx)
                     add_event(
                         "💱 Forex session CLOSED (Fri 22:00–Sun 22:00 UTC) — "
                         f"skipping new FX entries"
@@ -1427,6 +1450,9 @@ def main():
             for asset in decision_assets:
                 try:
                     asset_exchange = _ex_for(asset)
+                    if asset_exchange is None:
+                        add_event(f"⏭️  Skipping {asset}: no exchange available (forex needs IG)")
+                        continue
                     current_price = await asset_exchange.get_current_price(asset)
                     asset_prices[asset] = current_price
                     if asset not in price_history:
