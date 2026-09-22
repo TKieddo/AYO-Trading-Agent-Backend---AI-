@@ -19,6 +19,60 @@ from src.config_loader import CONFIG
 
 logger = logging.getLogger(__name__)
 
+# Public instrument universe cache (no auth required).
+_USDT_SWAP_BASES_CACHE: Dict[str, Any] = {"ts": 0.0, "bases": set()}
+_USDT_SWAP_BASES_TTL_SEC = 900
+
+
+def fetch_okx_usdt_swap_bases(
+    base_url: Optional[str] = None,
+    ttl_sec: int = _USDT_SWAP_BASES_TTL_SEC,
+) -> set:
+    """
+    Return live OKX USDT-margined SWAP base assets (e.g. {'BTC','ETH',...}).
+    Uses the public instruments endpoint — no API keys required.
+    """
+    now = time.time()
+    cached = _USDT_SWAP_BASES_CACHE.get("bases") or set()
+    if cached and (now - float(_USDT_SWAP_BASES_CACHE.get("ts") or 0)) < ttl_sec:
+        return set(cached)
+
+    url = (base_url or CONFIG.get("okx_base_url") or "https://www.okx.com").rstrip("/")
+    try:
+        resp = requests.get(
+            f"{url}/api/v5/public/instruments",
+            params={"instType": "SWAP"},
+            timeout=20,
+        )
+        resp.raise_for_status()
+        payload = resp.json() or {}
+        rows = payload.get("data") if isinstance(payload, dict) else payload
+        bases = set()
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            state = str(row.get("state") or "").lower()
+            if state and state != "live":
+                continue
+            settle = (row.get("settleCcy") or row.get("quoteCcy") or "").upper()
+            inst_id = (row.get("instId") or "").upper()
+            if settle and settle != "USDT":
+                continue
+            if not inst_id.endswith("-USDT-SWAP"):
+                continue
+            base = inst_id.replace("-USDT-SWAP", "").split("-")[0]
+            if base:
+                bases.add(base)
+        if bases:
+            _USDT_SWAP_BASES_CACHE["ts"] = now
+            _USDT_SWAP_BASES_CACHE["bases"] = bases
+            logger.info(f"OKX USDT-SWAP universe: {len(bases)} live bases")
+            return bases
+        logger.warning("OKX instruments returned no USDT-SWAP bases")
+    except Exception as e:
+        logger.warning(f"Failed to fetch OKX USDT-SWAP instruments: {e}")
+    return set(cached) if cached else set()
+
 
 class OKXAPI:
     """Client for OKX perpetual SWAP (crypto) — demo via x-simulated-trading header."""
@@ -177,6 +231,21 @@ class OKXAPI:
         info = items[0] if items else {}
         self._inst_cache[inst_id] = info
         return info
+
+    def list_usdt_swap_bases(self) -> set:
+        """Cached set of base assets tradeable as USDT-SWAP on this OKX account/venue."""
+        return fetch_okx_usdt_swap_bases(base_url=self.base)
+
+    def is_usdt_swap_tradable(self, asset: str) -> bool:
+        base = self._normalize_asset(asset)
+        if not base:
+            return False
+        bases = self.list_usdt_swap_bases()
+        if not bases:
+            # Fail open only when the public catalog is unreachable (avoid total halt).
+            info = self._get_instrument(self._to_inst_id(base))
+            return bool(info.get("instId"))
+        return base in bases
 
     def _contracts_from_coins(self, asset: str, coin_qty: float) -> str:
         """Convert coin quantity to OKX contract size string."""

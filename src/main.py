@@ -7,7 +7,7 @@ sys.path.append(str(pathlib.Path(__file__).parent.parent))
 from src.strategies.strategy_factory import StrategyFactory
 from src.indicators.technical_analysis_client import TechnicalAnalysisClient
 from src.config_loader import CONFIG, get_leverage_for_asset
-from src.pair_hunter import PairHunter, get_best_pairs
+from src.pair_hunter import PairHunter, get_best_pairs, filter_assets_to_trading_venue
 from src.webhook_notifier import WebhookNotifier
 import asyncio
 import logging
@@ -877,10 +877,28 @@ def main():
         """True when at least one core indicator arrived — empty series means no LLM entry edge."""
         if not section:
             return False
-        if section.get("current_price") in (None, 0, 0.0):
+        try:
+            px = float(section.get("current_price") or 0)
+        except (TypeError, ValueError):
+            px = 0.0
+        if px <= 0:
             return False
         intra = section.get("intraday") or {}
         return any(intra.get(k) is not None for k in ("ema20", "rsi14", "macd"))
+
+    def _price_decimals(price: float) -> int:
+        """Keep sub-cent coins from rounding to 0.00 (which looked like 'no market data')."""
+        try:
+            p = abs(float(price or 0))
+        except (TypeError, ValueError):
+            return 6
+        if p >= 100:
+            return 2
+        if p >= 1:
+            return 4
+        if p >= 0.01:
+            return 6
+        return 8
 
     def _has_required_ta_data(asset: str) -> bool:
         """Validate that key TA inputs exist before adding hunted asset to decision universe."""
@@ -889,6 +907,19 @@ def main():
                 symbol = asset if "/" in asset else f"{asset[:3]}/{asset[3:6]}"
                 tf = CONFIG.get("forex_interval") or CONFIG.get("intraday_timeframe") or "15m"
             else:
+                # Crypto must be listed on the live trading venue (OKX) before TA probes.
+                # Pair Hunter scores Binance heat — without this gate, meme names pass
+                # TAAPI/Binance fallback then fail every OKX price/candle fetch.
+                venue = str(CONFIG.get("exchange") or "okx").lower().strip()
+                if venue == "okx":
+                    try:
+                        from src.trading.okx_api import fetch_okx_usdt_swap_bases
+                        bases = fetch_okx_usdt_swap_bases()
+                        base = str(asset or "").strip().upper().replace("USDT", "").replace("-SWAP", "").replace("-", "")
+                        if bases and base not in bases:
+                            return False
+                    except Exception:
+                        pass
                 symbol = f"{asset}/USDT"
                 tf = CONFIG.get("intraday_timeframe") or CONFIG.get("interval") or "15m"
             longterm_tf = CONFIG.get("longterm_timeframe") or "4h"
@@ -1333,6 +1364,9 @@ def main():
                             logger.warning(f"Pair Hunter returned invalid result: {hunted_assets}. Using fallback.")
                             hunted_assets = []
                         if hunted_assets:
+                            hunted_assets = filter_assets_to_trading_venue(hunted_assets)
+                            if not hunted_assets:
+                                add_event("⚠️ Pair Hunter: all candidates filtered out (not on OKX).")
                             hunted_assets = _rank_hunted_assets_by_performance(hunted_assets)
                             validated_hunts = []
                             for hunted_asset in hunted_assets:
@@ -1349,7 +1383,8 @@ def main():
                         add_event(f"⚠️ Pair Hunter error: {e}. Using cached/fallback assets.")
                         hunted_assets = []
                 else:
-                    hunted_assets = list(run_loop._last_hunted_assets)
+                    hunted_assets = filter_assets_to_trading_venue(list(run_loop._last_hunted_assets))
+                    run_loop._last_hunted_assets = hunted_assets
 
                 if hunted_assets:
                     merged_assets = list(positions_assets) + [a for a in hunted_assets if a not in positions_assets]
@@ -1454,10 +1489,18 @@ def main():
                         add_event(f"⏭️  Skipping {asset}: no exchange available (forex needs IG)")
                         continue
                     current_price = await asset_exchange.get_current_price(asset)
+                    if not current_price or float(current_price) <= 0:
+                        add_event(f"⏭️  Skipping {asset}: no usable price on venue")
+                        await _record_pair_hunter_data_failure(asset, "no venue price")
+                        continue
                     asset_prices[asset] = current_price
                     if asset not in price_history:
                         price_history[asset] = deque(maxlen=60)
-                    price_history[asset].append({"t": datetime.now(timezone.utc).isoformat(), "mid": round_or_none(current_price, 2)})
+                    px_decimals = _price_decimals(current_price)
+                    price_history[asset].append({
+                        "t": datetime.now(timezone.utc).isoformat(),
+                        "mid": round_or_none(current_price, px_decimals),
+                    })
 
                     is_fx = _looks_like_forex(asset)
                     if is_fx:
@@ -1492,25 +1535,25 @@ def main():
                     market_sections.append({
                         "asset": asset,
                         "venue": "ig" if is_fx else (CONFIG.get("exchange") or "okx"),
-                        "current_price": round_or_none(current_price, 2),
+                        "current_price": round_or_none(current_price, px_decimals),
                         "intraday": {
-                            "ema20": round_or_none(ema_series[-1], 2) if ema_series else None,
-                            "macd": round_or_none(macd_series[-1], 2) if macd_series else None,
+                            "ema20": round_or_none(ema_series[-1], px_decimals) if ema_series else None,
+                            "macd": round_or_none(macd_series[-1], px_decimals) if macd_series else None,
                             "rsi7": round_or_none(rsi7_series[-1], 2) if rsi7_series else None,
                             "rsi14": round_or_none(rsi14_series[-1], 2) if rsi14_series else None,
                             "series": {
-                                "ema20": round_series(ema_series, 2),
-                                "macd": round_series(macd_series, 2),
+                                "ema20": round_series(ema_series, px_decimals),
+                                "macd": round_series(macd_series, px_decimals),
                                 "rsi7": round_series(rsi7_series, 2),
                                 "rsi14": round_series(rsi14_series, 2)
                             }
                         },
                         "long_term": {
-                            "ema20": round_or_none(lt_ema20, 2),
-                            "ema50": round_or_none(lt_ema50, 2),
-                            "atr3": round_or_none(lt_atr3, 2),
-                            "atr14": round_or_none(lt_atr14, 2),
-                            "macd_series": round_series(lt_macd_series, 2),
+                            "ema20": round_or_none(lt_ema20, px_decimals),
+                            "ema50": round_or_none(lt_ema50, px_decimals),
+                            "atr3": round_or_none(lt_atr3, px_decimals),
+                            "atr14": round_or_none(lt_atr14, px_decimals),
+                            "macd_series": round_series(lt_macd_series, px_decimals),
                             "rsi_series": round_series(lt_rsi_series, 2)
                         },
                         "open_interest": round_or_none(oi, 2),
@@ -1856,7 +1899,21 @@ def main():
                     f"{(' (' + ', '.join(missing) + ')') if missing else ''}. "
                     f"Mechanical TP/SL still active."
                 )
-                outputs = {a: {"action": "hold", "allocation_usd": 0, "rationale": "no usable market data"} for a in decision_assets}
+                outputs = {
+                    "reasoning": "Skipped DeepSeek — no usable market data for flat assets; mechanical TP/SL still active.",
+                    "trade_decisions": [
+                        {
+                            "asset": a,
+                            "action": "hold",
+                            "allocation_usd": 0,
+                            "tp_price": None,
+                            "sl_price": None,
+                            "exit_plan": "",
+                            "rationale": "no usable market data",
+                        }
+                        for a in decision_assets
+                    ],
+                }
             else:
                 current_strategy_name = agent.get_name()
                 if not hasattr(run_loop, '_last_strategy_name'):

@@ -257,6 +257,11 @@ class TechnicalAnalysisClient:
             okx_df = self._get_okx_bars(symbol, interval, limit=min(limit, 300))
             if not okx_df.empty:
                 return okx_df
+            # When OKX is the trading venue, do not invent indicators from Binance for
+            # symbols that OKX cannot price — that caused Pair Hunter false positives.
+            if self._preferred_exchange == "okx":
+                self.logger.debug(f"OKX returned no bars for {symbol} {interval}; skipping Binance fallback")
+                return pd.DataFrame()
 
         try:
             # Convert symbol format (BTC/USDT -> BTCUSDT)

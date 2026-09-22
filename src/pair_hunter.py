@@ -86,7 +86,7 @@ class PairHunter:
         return await self._hunt_basic(min_volatility, timeframe)
     
     async def _hunt_enhanced(self) -> List[str]:
-        """Use enhanced Binance-based hunting"""
+        """Use enhanced Binance-based hunting, then keep only venue-tradable symbols."""
         try:
             logger.info(f"🔍 PAIR HUNTER (ENHANCED): Scanning for top {self.top_n} opportunities...")
             
@@ -96,9 +96,10 @@ class PairHunter:
             except ImportError:
                 from pair_hunter_enhanced.manager import PairHunterManager
             
-            # Create manager — empty fallback so we don't silently trade hardcoded BTC/ETH/SOL
+            # Over-fetch from Binance — many hot names are not listed on OKX.
+            overfetch_n = max(self.top_n * 5, self.top_n + 20)
             hunter = PairHunterManager(
-                top_n=self.top_n,
+                top_n=overfetch_n,
                 fallback_pairs=[]
             )
             
@@ -110,8 +111,9 @@ class PairHunter:
             
             # Convert from BTCUSDT to BTC format
             assets = [p.replace('USDT', '') for p in pairs]
+            assets = filter_assets_to_trading_venue(assets, limit=self.top_n)
             
-            logger.info(f"🏆 ENHANCED PAIR HUNTER discovered: {assets}")
+            logger.info(f"🏆 ENHANCED PAIR HUNTER discovered (venue-filtered): {assets}")
             self._cached_pairs = assets
             self._last_hunt_time = datetime.now()
             
@@ -366,6 +368,52 @@ class PairHunter:
 # SIMPLIFIED FUNCTION API (for main.py integration)
 # ═══════════════════════════════════════════════════════════
 
+def filter_assets_to_trading_venue(assets: List[str], limit: Optional[int] = None) -> List[str]:
+    """
+    Keep only symbols the configured crypto venue can actually trade.
+    When EXCHANGE=okx (default), intersect with live OKX USDT-SWAP instruments.
+    """
+    from src.config_loader import CONFIG
+
+    if not assets:
+        return []
+
+    venue = str(CONFIG.get("exchange") or "okx").lower().strip()
+    cleaned = []
+    seen = set()
+    for raw in assets:
+        base = str(raw or "").strip().upper().replace("USDT", "").replace("-SWAP", "").replace("-", "")
+        if not base or base in seen:
+            continue
+        seen.add(base)
+        cleaned.append(base)
+
+    if venue != "okx":
+        return cleaned[:limit] if limit else cleaned
+
+    try:
+        from src.trading.okx_api import fetch_okx_usdt_swap_bases
+        okx_bases = fetch_okx_usdt_swap_bases()
+    except Exception as e:
+        logger.warning(f"OKX venue filter unavailable ({e}); returning unfiltered hunt list")
+        return cleaned[:limit] if limit else cleaned
+
+    if not okx_bases:
+        logger.warning("OKX venue filter empty; returning unfiltered hunt list")
+        return cleaned[:limit] if limit else cleaned
+
+    kept = [a for a in cleaned if a in okx_bases]
+    dropped = [a for a in cleaned if a not in okx_bases]
+    if dropped:
+        logger.info(
+            f"Pair Hunter dropped {len(dropped)} non-OKX symbols: {', '.join(dropped[:12])}"
+            + ("…" if len(dropped) > 12 else "")
+        )
+    if limit is not None:
+        kept = kept[:limit]
+    return kept
+
+
 async def get_best_pairs(
     exchange_client=None,
     top_n: int = 7,
@@ -376,13 +424,13 @@ async def get_best_pairs(
     Simple function to get best trading pairs
     
     Args:
-        exchange_client: Exchange client (Hyperliquid/Aster/Binance)
+        exchange_client: Exchange client (Hyperliquid/Aster/Binance/OKX)
         top_n: Number of pairs to return
         min_volatility: Minimum volatility filter for basic hunting mode
         use_enhanced: Use Binance-based enhanced hunting if no exchange client
         
     Returns:
-        List of asset symbols
+        List of asset symbols tradeable on the configured venue
     """
     from src.config_loader import CONFIG
 
@@ -391,14 +439,18 @@ async def get_best_pairs(
 
     # Check if enhanced hunting is enabled via environment
     if CONFIG.get('enable_pair_hunter', False) and use_enhanced:
-        # Use enhanced mode (Binance-based)
+        # Use enhanced mode (Binance scan → OKX venue filter)
         hunter = PairHunter(exchange_client=None, top_n=top_n)
-        return await hunter.hunt_pairs(min_volatility=min_volatility)
+        assets = await hunter.hunt_pairs(min_volatility=min_volatility)
     elif exchange_client:
         # Use basic mode with exchange client
         hunter = PairHunter(exchange_client, top_n=top_n)
-        return await hunter.hunt_pairs(min_volatility=min_volatility)
+        assets = await hunter.hunt_pairs(min_volatility=min_volatility)
+        assets = filter_assets_to_trading_venue(assets, limit=top_n)
     else:
         # Fallback to ASSETS
         assets_str = CONFIG.get('assets') or os.getenv('ASSETS', '')
-        return [a.strip() for a in str(assets_str).replace(',', ' ').split() if a.strip()][:top_n]
+        assets = [a.strip() for a in str(assets_str).replace(',', ' ').split() if a.strip()][:top_n]
+        assets = filter_assets_to_trading_venue(assets, limit=top_n)
+
+    return filter_assets_to_trading_venue(assets or [], limit=top_n)
