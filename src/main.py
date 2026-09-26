@@ -1976,16 +1976,26 @@ def main():
                 try:
                     decisions = outputs.get("trade_decisions", [])
                     action_counts = {}
+                    proposals = []
                     for d in decisions if isinstance(decisions, list) else []:
+                        if not isinstance(d, dict):
+                            continue
                         action = (d.get("action") if isinstance(d, dict) else None) or "unknown"
                         action_counts[action] = action_counts.get(action, 0) + 1
+                        proposals.append({
+                            "asset": d.get("asset"),
+                            "action": action,
+                            "allocation_usd": d.get("allocation_usd"),
+                            "rationale": d.get("rationale") or "",
+                            "tp_price": d.get("tp_price"),
+                            "sl_price": d.get("sl_price"),
+                        })
                     add_event(f"🧾 LLM decision summary: {action_counts} across {len(decision_assets)} analyzed assets")
-                    await webhook_notifier.send_notification("DECISION_SUMMARY", {
-                        "analyzed_assets": decision_assets,
-                        "decision_count": len(decisions) if isinstance(decisions, list) else 0,
-                        "action_counts": action_counts,
-                        "timestamp": str(datetime.now(timezone.utc))
-                    })
+                    await webhook_notifier.notify_agent_proposal(
+                        analyzed_assets=decision_assets,
+                        proposals=proposals,
+                        action_counts=action_counts,
+                    )
                 except Exception as e:
                     logging.debug(f"Decision summary notification failed: {e}")
 
@@ -2847,6 +2857,16 @@ def main():
                 logging.info("⏸️  Trading is disabled (TRADING_ENABLED=false). Monitoring positions only.")
             
             # Execute trades for each asset
+            cycle_outcomes = []  # Final system results for Telegram (after filters)
+
+            def _note_outcome(asset_name: str, final_status: str, proposed_action: str, detail: str = ""):
+                cycle_outcomes.append({
+                    "asset": asset_name,
+                    "proposed_action": proposed_action,
+                    "final_status": final_status,
+                    "detail": detail,
+                })
+
             for output in outputs.get("trade_decisions", []) if isinstance(outputs, dict) else []:
                 try:
                     asset = output.get("asset")
@@ -2871,6 +2891,7 @@ def main():
                         # Allow closing existing positions (safety), but block new entries
                         if not existing_position:
                             add_event(f"⏸️  SKIPPED {asset} {action.upper()}: Trading is paused. Only closing existing positions allowed.")
+                            _note_outcome(asset, "blocked", action, "Trading paused — new entries disabled")
                             continue
                         else:
                             # This is closing an existing position - allow it for safety
@@ -2935,12 +2956,17 @@ def main():
                             # CRITICAL: BLOCK adding to existing positions in the same direction
                             if is_same_direction:
                                 add_event(f"⏸️  BLOCKED ADDING TO POSITION for {asset}: Already have {'long' if existing_is_long else 'short'} position. Only close/flip when exit conditions are met. Holding existing position.")
+                                _note_outcome(
+                                    asset, "blocked", action,
+                                    f"Already in {'long' if existing_is_long else 'short'} — no add-on",
+                                )
                                 continue  # Skip this trade - hold the existing position
                             
                             # AI close: always flatten with reduce-only full size (never re-size via MARGIN_PER_POSITION)
                             if is_closing:
                                 if not agent_manage_exits:
                                     add_event(f"⏸️  EXIT BLOCKED for {asset}: AGENT_MANAGE_EXITS=false (TP/SL-only close mode)")
+                                    _note_outcome(asset, "blocked", action, "Exit blocked — AGENT_MANAGE_EXITS=false (TP/SL-only)")
                                     continue
                                 close_size = abs(float(existing_position.get("quantity") or existing_position.get("szi") or 0))
                                 if close_size <= 0:
@@ -2985,6 +3011,7 @@ def main():
                                         logging.debug(f"Webhook exit notification failed: {e}")
                                     # Drop from local positions list so later logic does not re-act
                                     positions = [p for p in positions if p.get("symbol") != asset]
+                                    _note_outcome(asset, "closed", action, "Flattened existing position on AI close")
                                 continue
 
                         # New entry — three gates, cheapest first.
@@ -2994,10 +3021,12 @@ def main():
                         asset_trading_settings = _settings_for_asset(asset, trading_settings)
                         if _looks_like_forex(asset) and not is_forex_session_open():
                             add_event(f"💱 ENTRY BLOCKED: {asset} — forex session closed")
+                            _note_outcome(asset, "blocked", action, "Forex session closed")
                             continue
                         governor_ok, governor_reason = risk_governor.check_can_enter(asset_trading_settings)
                         if not governor_ok:
                             add_event(f"🚦 ENTRY PAUSED: {governor_reason}")
+                            _note_outcome(asset, "blocked", action, f"Risk governor: {governor_reason}")
                             continue
 
                         # 2. Re-entry cooldown. Repeatedly flipping the same pair in chop was the
@@ -3005,6 +3034,7 @@ def main():
                         entry_allowed, cooldown_reason = reentry_guard.check_entry(asset, is_buy, asset_trading_settings)
                         if not entry_allowed:
                             add_event(f"⏸️  ENTRY BLOCKED: {cooldown_reason}")
+                            _note_outcome(asset, "blocked", action, cooldown_reason)
                             continue
 
                         # 3. Higher-timeframe agreement, so we stop buying dips in downtrends.
@@ -3013,6 +3043,7 @@ def main():
                         )
                         if not trend_ok:
                             add_event(f"🧭 ENTRY BLOCKED: {trend_reason}")
+                            _note_outcome(asset, "blocked", action, trend_reason)
                             continue
 
                         # Get per-asset leverage (from .env override or forex/crypto default)
@@ -3039,6 +3070,7 @@ def main():
                             margin_per_position = available_balance
                         if margin_per_position is None:
                             add_event(f"❌ ERROR: MARGIN_PER_POSITION is not set in settings/.env. Cannot place trade for {asset}. Please configure MARGIN_PER_POSITION.")
+                            _note_outcome(asset, "blocked", action, "MARGIN_PER_POSITION not configured")
                             continue
                         
                         # Set leverage BEFORE calculating notional (for margin mode, this determines actual leverage)
@@ -3408,6 +3440,12 @@ def main():
                         add_event(f"{action.upper()} {asset} amount {amount:.4f} at ~{current_price}")
                         if rationale:
                             add_event(f"Post-trade rationale for {asset}: {rationale}")
+                        _note_outcome(
+                            asset,
+                            "filled",
+                            action,
+                            f"{'LONG' if is_buy else 'SHORT'} opened · size {amount:.4f} @ ~{current_price}",
+                        )
                         # Write to diary after confirming fills status
                         with open(diary_path, "a") as f:
                             diary_entry = {
@@ -3432,6 +3470,12 @@ def main():
                     else:
                         # Hold decision - log with all fields for consistency
                         add_event(f"Hold {asset}: {output.get('rationale', '')}")
+                        _note_outcome(
+                            asset,
+                            "held",
+                            "hold",
+                            (output.get("rationale") or "Stay flat")[:140],
+                        )
                         # Write hold to diary with complete fields
                         with open(diary_path, "a") as f:
                             diary_entry = {
@@ -3455,6 +3499,17 @@ def main():
                 except Exception as e:
                     import traceback
                     add_event(f"Execution error {asset}: {e}")
+                    try:
+                        _note_outcome(asset, "skipped", output.get("action") if isinstance(output, dict) else "unknown", str(e)[:140])
+                    except Exception:
+                        pass
+
+            # Telegram: final system outcomes for this cycle (agent proposal already sent above)
+            try:
+                if cycle_outcomes:
+                    await webhook_notifier.notify_system_decision(cycle_outcomes)
+            except Exception as e:
+                logging.debug(f"System decision notification failed: {e}")
 
             await asyncio.sleep(get_interval_seconds(args.interval))
 
