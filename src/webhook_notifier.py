@@ -37,15 +37,17 @@ def _action_label(action: Any) -> str:
     return (a or "UNKNOWN").upper()
 
 
-def _action_emoji(action: Any) -> str:
+def _proposal_emoji(action: Any) -> str:
+    """Proposal icons only — never green/red (those are reserved for real fills)."""
     a = str(action or "").strip().lower()
-    if a == "buy":
-        return "🟢"
-    if a == "sell":
-        return "🔴"
+    if a in ("buy", "sell"):
+        return "🔷️"  # blue diamond — proposed open (long or short)
     if a == "hold":
-        return "⚪"
-    return "•"
+        return "🔶️"  # orange diamond — proposed hold
+    return "🔷️"
+
+
+_BUBBLE_END = "≈≈≈≈≈≈≈≈≈≈≈≈☆☆☆☆☆☆☆☆"
 
 
 class WebhookNotifier:
@@ -79,11 +81,15 @@ class WebhookNotifier:
         lower = (url or "").lower()
         return "api.telegram.org" in lower and "/sendmessage" in lower
 
+    def _with_bubble_end(self, body: str) -> str:
+        """Append a clear end marker so consecutive Telegram bubbles don't look fused."""
+        return f"{body.rstrip()}\n\n{_BUBBLE_END}"
+
     def _format_telegram_message(self, event_type: str, data: Dict[str, Any]) -> str:
         """Create a structured Telegram HTML message."""
         event = (event_type or "EVENT").upper()
         if event == "ENTRY":
-            return (
+            body = (
                 f"🟢 <b>ENTRY</b>  {_esc(data.get('asset', ''))}\n"
                 f"Side: <b>{_esc(data.get('side', ''))}</b>\n"
                 f"Price: {_esc(data.get('price', ''))}\n"
@@ -91,8 +97,9 @@ class WebhookNotifier:
                 f"Leverage: {_esc(data.get('leverage', ''))}x\n"
                 f"Reason: {_esc(_short(data.get('reason', ''), 180))}"
             )
+            return self._with_bubble_end(body)
         if event == "EXIT":
-            return (
+            body = (
                 f"🔴 <b>EXIT</b>  {_esc(data.get('asset', ''))}\n"
                 f"Side: <b>{_esc(data.get('side', ''))}</b>\n"
                 f"Entry: {_esc(data.get('entry_price', ''))}\n"
@@ -100,41 +107,46 @@ class WebhookNotifier:
                 f"PnL: {_esc(data.get('pnl_percent', ''))}%  /  ${_esc(data.get('pnl_usd', ''))}\n"
                 f"Reason: {_esc(_short(data.get('reason', ''), 180))}"
             )
+            return self._with_bubble_end(body)
         if event == "PAIR_HUNTER":
             pairs = data.get("top_pairs") or []
             positions = data.get("current_positions") or []
             pair_lines = "\n".join(f"  • <code>{_esc(p)}</code>" for p in pairs) or "  • none"
             pos_lines = "\n".join(f"  • <code>{_esc(p)}</code>" for p in positions) or "  • none"
-            return (
+            body = (
                 f"🎯 <b>PAIR HUNTER</b>\n"
                 f"<i>Watchlist for this cycle</i>\n\n"
                 f"<b>Top pairs</b>\n{pair_lines}\n\n"
                 f"<b>Open positions</b>\n{pos_lines}"
             )
+            return self._with_bubble_end(body)
         if event == "POSITION_UPDATE":
-            return (
+            body = (
                 f"📊 <b>POSITION UPDATE</b>\n"
                 f"Open: <b>{_esc(data.get('count', 0))}</b>\n"
                 f"Total PnL: ${_esc(data.get('total_pnl_usd', 0))} "
                 f"({_esc(data.get('total_pnl_pct', 0))}%)"
             )
+            return self._with_bubble_end(body)
         if event in ("DECISION_SUMMARY", "AGENT_PROPOSAL"):
-            return self._format_agent_proposal(data)
+            return self._with_bubble_end(self._format_agent_proposal(data))
         if event in ("CYCLE_OUTCOME", "SYSTEM_DECISION"):
-            return self._format_system_decision(data)
+            return self._with_bubble_end(self._format_system_decision(data))
         if event == "MILESTONE":
-            return (
+            body = (
                 f"🏁 <b>MILESTONE</b>  {_esc(data.get('asset', ''))}\n"
                 f"PnL: {_esc(data.get('pnl_percent', ''))}%  /  ${_esc(data.get('pnl_usd', ''))}\n"
                 f"{_esc(data.get('milestone', ''))}"
             )
+            return self._with_bubble_end(body)
         if event == "ERROR":
-            return (
+            body = (
                 f"⚠️ <b>ERROR</b>  {_esc(data.get('error_type', ''))}\n"
                 f"Asset: {_esc(data.get('asset', '') or '—')}\n"
                 f"{_esc(_short(data.get('message', ''), 220))}"
             )
-        return f"ℹ️ <b>{_esc(event)}</b>\n{_esc(_short(data, 400))}"
+            return self._with_bubble_end(body)
+        return self._with_bubble_end(f"ℹ️ <b>{_esc(event)}</b>\n{_esc(_short(data, 400))}")
 
     def _format_agent_proposal(self, data: Dict[str, Any]) -> str:
         """LLM intent only — not yet filtered by risk / HTF / cooldowns."""
@@ -165,7 +177,7 @@ class WebhookNotifier:
             asset = _esc(p.get("asset", "?"))
             action = p.get("action", "hold")
             label = _esc(_action_label(action))
-            emoji = _action_emoji(action)
+            emoji = _proposal_emoji(action)
             alloc = p.get("allocation_usd")
             rationale = _esc(_short(p.get("rationale", ""), 120))
             lines.append(f"{emoji} <b>{asset}</b>  →  <b>{label}</b>")
@@ -213,6 +225,7 @@ class WebhookNotifier:
 
             if status in ("filled", "executed", "opened"):
                 filled += 1
+                # Real fill — green/red only appears on ENTRY/EXIT bubbles; here use check.
                 icon, title = "✅", "FILLED"
             elif status in ("blocked", "rejected", "paused"):
                 blocked += 1
@@ -222,7 +235,7 @@ class WebhookNotifier:
                 icon, title = "🏁", "CLOSED"
             elif status in ("held", "hold"):
                 held += 1
-                icon, title = "⚪", "HOLD"
+                icon, title = "🔶️", "HOLD"
             else:
                 skipped += 1
                 icon, title = "⏸️", status.upper() or "SKIPPED"
