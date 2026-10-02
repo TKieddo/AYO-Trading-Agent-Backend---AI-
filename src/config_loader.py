@@ -170,7 +170,9 @@ CONFIG = {
     "crypto_assets": _get_env("CRYPTO_ASSETS"),  # e.g., "BTC ETH SOL BNB ZEC DOGE AVAX XLM XMR"
     "forex_assets": _get_env("FOREX_ASSETS"),  # e.g., "EURUSD GBPUSD USDJPY AUDUSD"
     "assets": _get_env("ASSETS"),  # Legacy: e.g., "BTC ETH SOL" or "BTC,ETH,SOL" (fallback if CRYPTO/STOCK/FOREX not set)
-    "interval": _get_env("INTERVAL"),  # e.g., "5m", "1h"
+    "interval": _get_env("INTERVAL"),  # e.g., "5m", "1h" — LLM decision cadence
+    # Mechanical TP/SL poll between LLM cycles (seconds). Keeps ROI take-profit accurate on a 15m INTERVAL.
+    "exit_check_seconds": _get_float("EXIT_CHECK_SECONDS", 20.0),
     # Strategy selection (default: None/empty uses LLM trend strategy)
     "strategy": _get_env("STRATEGY"),  # Options: "default", "llm_trend", "scalping", "auto", etc.
     # Scalping strategy settings
