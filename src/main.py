@@ -1087,8 +1087,10 @@ def main():
             return False
 
     async def _mechanical_exit_sweep(settings: dict) -> int:
-        """Fast TP/SL-only pass between LLM cycles. Returns number of positions closed."""
+        """Fast TP/SL-only pass. Safe to call anytime (between LLM cycles or from watcher)."""
         closed_n = 0
+        if not settings:
+            settings = dict(_LIVE_SETTINGS) if _LIVE_SETTINGS else {}
         try:
             if use_multi_exchange and exchange_manager:
                 st = await exchange_manager.get_merged_user_state()
@@ -1129,14 +1131,19 @@ def main():
             upl = _safe_float(
                 pos.get("unrealized_pnl") or pos.get("pnl") or pos.get("unRealizedProfit"), 0.0
             )
-            if entry > 0 and current > 0:
-                derived = (current - entry) * qty if is_long else (entry - current) * qty
-                # Prefer the more conservative loss / confirm profit with derived when exchange UPL laggy
-                if derived < upl:
-                    upl = derived
             roi = _compute_position_roi_percent(
                 pos, is_long=is_long, entry_price=entry, current_price=current
             )
+            # If exchange ROI is missing/zero but we have $ profit and margin, recompute.
+            margin = _safe_float(
+                pos.get("initial_margin") or pos.get("initialMargin") or pos.get("positionInitialMargin"),
+                0.0,
+            )
+            if margin > 0 and upl != 0:
+                roi_from_usd = (upl / margin) * 100.0
+                # Use the larger profit / worse loss so we never miss a TP
+                if abs(roi_from_usd) >= abs(roi):
+                    roi = roi_from_usd
             price_move = None
             if entry > 0 and current > 0:
                 price_move = (
@@ -1150,17 +1157,26 @@ def main():
                 reason = f"USD stop ${upl:.2f} <= ${stop_usd:.2f}"
             elif roi <= -ui_sl:
                 reason = f"ROI stop {roi:.2f}% <= -{ui_sl:g}%"
+            # Take profit: ROI% mode, OR hit absolute $ lock if configured (whichever fires first).
             elif tp_mode == "roi_percent" and roi >= tp_pct:
                 reason = f"ROI TP {roi:.2f}% >= {tp_pct:g}%"
                 diary = "close_tp"
             elif tp_mode == "price_percent" and price_move is not None and price_move >= tp_pct:
                 reason = f"Price TP {price_move:.2f}% >= {tp_pct:g}%"
                 diary = "close_tp"
+            elif tp_usd_f > 0 and upl >= tp_usd_f:
+                # Always honor take_profit_usd as a hard profit lock when set
+                reason = f"USD TP ${upl:.2f} >= ${tp_usd_f:g}"
+                diary = "close_tp"
             elif tp_mode == "usd" and tp_usd_f > 0 and upl >= tp_usd_f:
                 reason = f"USD TP ${upl:.2f} >= ${tp_usd_f:g}"
                 diary = "close_tp"
 
             if not reason:
+                logging.debug(
+                    f"Exit sweep hold {asset}: ROI={roi:.2f}% UPL=${upl:.2f} "
+                    f"(need ROI>={tp_pct:g}% or UPL>=${tp_usd_f:g})"
+                )
                 continue
             add_event(f"⚡ FAST EXIT {asset}: {reason}")
             ok = await _close_position_reduce_only(
@@ -1178,6 +1194,34 @@ def main():
                 closed_n += 1
         return closed_n
 
+    async def _exit_watcher_loop():
+        """Always-on TP/SL poll — runs even while the LLM cycle is blocked."""
+        add_event("⚡ Exit watcher started (TP/SL independent of LLM cycle)")
+        while True:
+            try:
+                settings = dict(_LIVE_SETTINGS) if _LIVE_SETTINGS else {}
+                if not settings:
+                    try:
+                        settings = await get_trading_settings()
+                        _LIVE_SETTINGS.update(settings)
+                    except Exception:
+                        settings = {}
+                exit_check_s = float(
+                    CONFIG.get("exit_check_seconds")
+                    or settings.get("exit_check_seconds")
+                    or 20
+                )
+                exit_check_s = max(5.0, exit_check_s)
+                n_closed = await _mechanical_exit_sweep(settings)
+                if n_closed:
+                    add_event(f"⚡ Exit watcher closed {n_closed} position(s)")
+                await asyncio.sleep(exit_check_s)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logging.warning(f"Exit watcher error: {e}")
+                await asyncio.sleep(10)
+
     async def run_loop():
         """Main trading loop that gathers data, calls the agent, and executes trades."""
         nonlocal invocation_count, initial_account_value
@@ -1186,6 +1230,7 @@ def main():
         position_cache = {}  # asset -> {pnl_usd, pnl_percent, timestamp, entry_price, initial_margin}
         last_cache_update = {}  # asset -> timestamp
         pair_hunter_stats_loaded = False
+        exit_watcher_task = asyncio.create_task(_exit_watcher_loop())
         
         while True:
             if not pair_hunter_stats_loaded:
