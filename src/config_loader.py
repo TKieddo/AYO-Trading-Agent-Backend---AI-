@@ -253,9 +253,9 @@ CONFIG = {
     "pair_hunter_weight_setup": _get_float("PAIR_HUNTER_WEIGHT_SETUP", 0.35),
     "pair_hunter_max_analyze_assets": _get_int("PAIR_HUNTER_MAX_ANALYZE_ASSETS", 8),  # Cap on assets passed to LLM per cycle
     "pair_hunter_perf_min_trades": _get_int("PAIR_HUNTER_PERF_MIN_TRADES", 3),  # Minimum completed trades before using performance score
-    "pair_hunter_perf_filter_min_trades": _get_int("PAIR_HUNTER_PERF_FILTER_MIN_TRADES", 6),  # Minimum completed trades before filtering weak pairs
-    "pair_hunter_perf_filter_min_win_rate": _get_float("PAIR_HUNTER_PERF_FILTER_MIN_WIN_RATE", 25.0),  # Filter pair if win rate below this threshold
-    "pair_hunter_perf_filter_min_expectancy_usd": _get_float("PAIR_HUNTER_PERF_FILTER_MIN_EXPECTANCY_USD", -1.0),  # Filter pair if expectancy/trade below this threshold
+    "pair_hunter_perf_filter_min_trades": _get_int("PAIR_HUNTER_PERF_FILTER_MIN_TRADES", 3),  # Minimum completed trades before filtering weak pairs
+    "pair_hunter_perf_filter_min_win_rate": _get_float("PAIR_HUNTER_PERF_FILTER_MIN_WIN_RATE", 25.0),  # Legacy; filter now keys off expectancy
+    "pair_hunter_perf_filter_min_expectancy_usd": _get_float("PAIR_HUNTER_PERF_FILTER_MIN_EXPECTANCY_USD", 0.0),  # Drop a pair once expectancy/trade is below this
     "pair_hunter_data_fail_threshold": _get_int("PAIR_HUNTER_DATA_FAIL_THRESHOLD", 3),  # Consecutive TA-data failures before temporary exclusion
     "pair_hunter_exclusion_cooldown_minutes": _get_int("PAIR_HUNTER_EXCLUSION_COOLDOWN_MINUTES", 180),  # Exclusion window for repeatedly invalid symbols
     # Webhook notifications (WhatsApp, Discord, etc.)

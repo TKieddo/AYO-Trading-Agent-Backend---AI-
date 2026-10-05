@@ -81,21 +81,22 @@ def record_close(
     _STATE.trades += 1
     _STATE.closes.append({"asset": asset, "pnl": pnl, "at": _now().isoformat()})
 
-    if pnl < 0:
+    # Scratches under $0.50 are leftover partials, not a new decision. Counting them
+    # turned one bad idea into a 14-loss streak and then a 2-hour pause that expired
+    # mid-session so the bot went straight back in.
+    if pnl <= -0.50:
         _STATE.consecutive_losses += 1
-    else:
+    elif pnl >= 0.50:
         _STATE.consecutive_losses = 0
 
     max_streak = int(_setting(trading_settings, "max_consecutive_losses", 4) or 0)
     if max_streak > 0 and _STATE.consecutive_losses >= max_streak:
-        minutes = float(_setting(trading_settings, "loss_streak_pause_minutes", 120.0) or 0)
-        if minutes > 0:
-            _STATE.paused_until = _now() + timedelta(minutes=minutes)
-            _STATE.pause_reason = (
-                f"streak: {_STATE.consecutive_losses} losses in a row, paused {minutes:.0f}m"
-            )
-            logger.warning(f"🚦 Entries paused — {_STATE.pause_reason}")
-            return
+        _STATE.paused_until = _end_of_day()
+        _STATE.pause_reason = (
+            f"streak: {_STATE.consecutive_losses} losses in a row, paused until next UTC day"
+        )
+        logger.warning(f"🚦 Entries paused — {_STATE.pause_reason}")
+        return
 
     limit_usd = _resolve_daily_loss_limit(trading_settings, equity)
     if limit_usd and _STATE.realized_pnl <= -abs(limit_usd):
@@ -115,14 +116,26 @@ def _resolve_daily_loss_limit(
     trading_settings: Optional[Dict[str, Any]],
     equity: Optional[float],
 ) -> Optional[float]:
-    limit_usd = _setting(trading_settings, "max_daily_loss_usd", None)
-    if limit_usd:
-        return abs(float(limit_usd))
+    # A 3% cap on a ~$5k account is about $150, so a $20 losing day never stopped
+    # entries. Default session stop is 3× the per-trade risk ($18 at a $6 risk).
+    # An explicit max_daily_loss_usd still wins. A percent cap can only tighten this.
+    risk = abs(float(_setting(trading_settings, "risk_per_trade_usd", 6) or 6))
+    cap = max(risk, 1.0) * 3.0
+    explicit = None
+    if trading_settings is not None and "max_daily_loss_usd" in trading_settings:
+        explicit = trading_settings.get("max_daily_loss_usd")
+    else:
+        explicit = CONFIG.get("max_daily_loss_usd")
+    try:
+        if explicit not in (None, "", 0, "0"):
+            cap = abs(float(explicit))
+    except (TypeError, ValueError):
+        pass
 
     limit_pct = _setting(trading_settings, "max_daily_loss_pct", 0.0)
     if limit_pct and equity and equity > 0:
-        return abs(float(equity) * (float(limit_pct) / 100.0))
-    return None
+        cap = min(cap, abs(float(equity) * (float(limit_pct) / 100.0)))
+    return cap
 
 
 def check_can_enter(trading_settings: Optional[Dict[str, Any]] = None) -> Tuple[bool, Optional[str]]:

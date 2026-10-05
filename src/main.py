@@ -628,14 +628,28 @@ def main():
             pnl_percent = 0.0
 
         stats = pair_hunter_stats.get(key, {})
-        total_trades = int(stats.get("total_trades", 0) or 0) + 1
-        wins = int(stats.get("wins", 0) or 0) + (1 if pnl_usd > 0 else 0)
-        losses = int(stats.get("losses", 0) or 0) + (1 if pnl_usd <= 0 else 0)
+        # Dust closes (partial leftovers under $0.50) were counted as full losses and
+        # dragged win rate to 0% on coins that had not actually been decided yet.
+        is_win = pnl_usd >= 0.50
+        is_loss = pnl_usd <= -0.50
+        total_trades = int(stats.get("total_trades", 0) or 0) + (1 if (is_win or is_loss) else 0)
+        wins = int(stats.get("wins", 0) or 0) + (1 if is_win else 0)
+        losses = int(stats.get("losses", 0) or 0) + (1 if is_loss else 0)
         total_pnl_usd = float(stats.get("total_pnl_usd", 0.0) or 0.0) + pnl_usd
         total_pnl_percent = float(stats.get("total_pnl_percent", 0.0) or 0.0) + pnl_percent
         win_rate = (wins / total_trades) * 100 if total_trades > 0 else 0.0
         expectancy_usd = total_pnl_usd / total_trades if total_trades > 0 else 0.0
         expectancy_percent = total_pnl_percent / total_trades if total_trades > 0 else 0.0
+
+        now_utc = datetime.now(timezone.utc)
+        excluded_until = None
+        exclusion_reason = ""
+        quarantine_after = int(CONFIG.get("pair_hunter_perf_filter_min_trades", 3) or 3)
+        if total_trades >= quarantine_after and expectancy_usd < 0:
+            excluded_until = (now_utc + timedelta(hours=24)).isoformat()
+            exclusion_reason = (
+                f"negative expectancy ${expectancy_usd:.2f} after {total_trades} trades"
+            )
 
         pair_hunter_stats[key] = {
             "total_trades": total_trades,
@@ -647,10 +661,10 @@ def main():
             "expectancy_usd": round(expectancy_usd, 4),
             "expectancy_percent": round(expectancy_percent, 4),
             "data_fail_count": 0,  # Reset TA data failures after a completed trade cycle
-            "excluded_until": None,
-            "exclusion_reason": "",
+            "excluded_until": excluded_until,
+            "exclusion_reason": exclusion_reason,
             "last_close_reason": close_reason,
-            "last_updated": datetime.now(timezone.utc).isoformat()
+            "last_updated": now_utc.isoformat()
         }
         _save_pair_hunter_stats_local()
         await _upsert_pair_hunter_stat_to_db(key, pair_hunter_stats[key])
@@ -738,9 +752,8 @@ def main():
             return hunted_assets
 
         min_trades = int(CONFIG.get("pair_hunter_perf_min_trades", 3) or 3)
-        filter_min_trades = int(CONFIG.get("pair_hunter_perf_filter_min_trades", 6) or 6)
-        filter_min_win_rate = float(CONFIG.get("pair_hunter_perf_filter_min_win_rate", 25.0) or 25.0)
-        filter_min_expectancy_usd = float(CONFIG.get("pair_hunter_perf_filter_min_expectancy_usd", -1.0) or -1.0)
+        filter_min_trades = int(CONFIG.get("pair_hunter_perf_filter_min_trades", 3) or 3)
+        filter_min_expectancy_usd = float(CONFIG.get("pair_hunter_perf_filter_min_expectancy_usd", 0.0) or 0.0)
 
         filtered_assets = []
         for asset in hunted_assets:
@@ -753,9 +766,11 @@ def main():
             total_trades = int(stats.get("total_trades", 0) or 0)
             win_rate = float(stats.get("win_rate", 0.0) or 0.0)
             expectancy_usd = float(stats.get("expectancy_usd", 0.0) or 0.0)
+            # One condition: after a few real closes, negative expectancy is enough.
+            # Requiring BOTH a low win rate AND expectancy under -$1 let SAND/SOL
+            # keep getting re-selected through a full losing day.
             should_filter = (
                 total_trades >= filter_min_trades
-                and win_rate < filter_min_win_rate
                 and expectancy_usd < filter_min_expectancy_usd
             )
             if should_filter:
