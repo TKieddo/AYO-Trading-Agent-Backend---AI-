@@ -2010,13 +2010,23 @@ def main():
                             logger.warning(f"Pair Hunter returned invalid result: {hunted_assets}. Using fallback.")
                             hunted_assets = []
                         if hunted_assets:
-                            hunted_assets = filter_assets_to_trading_venue(hunted_assets)
+                            hunted_assets = filter_assets_to_trading_venue(
+                                hunted_assets, limit=pair_hunter_top_n
+                            )
                             if not hunted_assets:
                                 add_event("⚠️ Pair Hunter: all candidates filtered out (not on OKX).")
                             hunted_assets = _rank_hunted_assets_by_performance(hunted_assets)
                             validated_hunts = []
                             mechanical_now = mech.is_mechanical_mode(_LIVE_SETTINGS)
                             for hunted_asset in hunted_assets:
+                                # Drop anything OKX cannot trade (pair hunter already filters,
+                                # but catalog can lag — this is the last gate before the loop).
+                                try:
+                                    if hasattr(hyperliquid, "is_usdt_swap_tradable") and not hyperliquid.is_usdt_swap_tradable(hunted_asset):
+                                        add_event(f"⚠️ Pair Hunter dropped {hunted_asset}: not listed on OKX USDT-SWAP")
+                                        continue
+                                except Exception:
+                                    pass
                                 # Mechanical mode reads OKX candles directly; the TAAPI check is for the LLM book.
                                 if mechanical_now or _has_required_ta_data(hunted_asset):
                                     await _record_pair_hunter_data_success(hunted_asset)
@@ -2024,6 +2034,14 @@ def main():
                                 else:
                                     await _record_pair_hunter_data_failure(hunted_asset, "missing TA candles")
                                     add_event(f"⚠️ Pair Hunter dropped {hunted_asset}: missing TA candles")
+                            # If drops left us short, backfill again from ASSETS / larger hunt pool.
+                            if len(validated_hunts) < pair_hunter_top_n:
+                                validated_hunts = filter_assets_to_trading_venue(
+                                    validated_hunts
+                                    + list(args.assets or [])
+                                    + list(getattr(run_loop, "_last_hunted_assets", []) or []),
+                                    limit=pair_hunter_top_n,
+                                )
                             hunted_assets = validated_hunts
                         run_loop._last_hunted_assets = hunted_assets
                         run_loop._pair_hunter_counter = 0

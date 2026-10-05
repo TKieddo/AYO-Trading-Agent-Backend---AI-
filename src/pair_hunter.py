@@ -372,8 +372,13 @@ def filter_assets_to_trading_venue(assets: List[str], limit: Optional[int] = Non
     """
     Keep only symbols the configured crypto venue can actually trade.
     When EXCHANGE=okx (default), intersect with live OKX USDT-SWAP instruments.
+
+    Never fail-open with the raw Binance hunt list — that is what let QNT/FET through
+    and spam OKX 51001. If the catalog is unreachable, probe each candidate's
+    ``BASE-USDT-SWAP`` instrument instead, then backfill from CONFIG ASSETS.
     """
     from src.config_loader import CONFIG
+    from src.trading.okx_api import fetch_okx_usdt_swap_bases, probe_okx_usdt_swap
 
     if not assets:
         return []
@@ -391,24 +396,54 @@ def filter_assets_to_trading_venue(assets: List[str], limit: Optional[int] = Non
     if venue != "okx":
         return cleaned[:limit] if limit else cleaned
 
+    okx_bases: set = set()
     try:
-        from src.trading.okx_api import fetch_okx_usdt_swap_bases
-        okx_bases = fetch_okx_usdt_swap_bases()
+        okx_bases = fetch_okx_usdt_swap_bases() or set()
     except Exception as e:
-        logger.warning(f"OKX venue filter unavailable ({e}); returning unfiltered hunt list")
-        return cleaned[:limit] if limit else cleaned
+        logger.warning(f"OKX venue catalog unavailable ({e}); probing candidates one-by-one")
 
-    if not okx_bases:
-        logger.warning("OKX venue filter empty; returning unfiltered hunt list")
-        return cleaned[:limit] if limit else cleaned
+    def _is_okx(base: str) -> bool:
+        if okx_bases:
+            return base in okx_bases
+        try:
+            return bool(probe_okx_usdt_swap(base))
+        except Exception:
+            return False
 
-    kept = [a for a in cleaned if a in okx_bases]
-    dropped = [a for a in cleaned if a not in okx_bases]
+    kept = [a for a in cleaned if _is_okx(a)]
+    dropped = [a for a in cleaned if a not in kept]
     if dropped:
         logger.info(
             f"Pair Hunter dropped {len(dropped)} non-OKX symbols: {', '.join(dropped[:12])}"
             + ("…" if len(dropped) > 12 else "")
+            + " — searching for replacements"
         )
+
+    # Backfill from configured ASSETS so we still fill top_n after drops.
+    target = limit if limit is not None else len(kept)
+    if len(kept) < target:
+        assets_str = CONFIG.get("assets") or os.getenv("ASSETS", "") or ""
+        fallback = [
+            a.strip().upper().replace("USDT", "").replace("-SWAP", "").replace("-", "")
+            for a in str(assets_str).replace(",", " ").split()
+            if a.strip()
+        ]
+        added = []
+        for base in fallback:
+            if not base or base in kept:
+                continue
+            if _is_okx(base):
+                kept.append(base)
+                added.append(base)
+                if len(kept) >= target:
+                    break
+        if added:
+            logger.info(f"Pair Hunter backfilled OKX ASSETS: {', '.join(added)}")
+        if len(kept) < target:
+            logger.warning(
+                f"OKX venue filter: only {len(kept)}/{target} tradable after drops + ASSETS backfill"
+            )
+
     if limit is not None:
         kept = kept[:limit]
     return kept
@@ -439,12 +474,12 @@ async def get_best_pairs(
 
     # Check if enhanced hunting is enabled via environment
     if CONFIG.get('enable_pair_hunter', False) and use_enhanced:
-        # Use enhanced mode (Binance scan → OKX venue filter)
+        # Use enhanced mode (Binance scan → OKX venue filter + backfill)
         hunter = PairHunter(exchange_client=None, top_n=top_n)
         assets = await hunter.hunt_pairs(min_volatility=min_volatility)
     elif exchange_client:
-        # Use basic mode with exchange client
-        hunter = PairHunter(exchange_client, top_n=top_n)
+        # Use basic mode with exchange client — over-fetch then venue-filter.
+        hunter = PairHunter(exchange_client, top_n=max(top_n * 5, top_n + 20))
         assets = await hunter.hunt_pairs(min_volatility=min_volatility)
         assets = filter_assets_to_trading_venue(assets, limit=top_n)
     else:

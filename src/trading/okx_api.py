@@ -75,6 +75,38 @@ def fetch_okx_usdt_swap_bases(
     return set(cached) if cached else set()
 
 
+def probe_okx_usdt_swap(asset: str, base_url: Optional[str] = None) -> bool:
+    """True if ``ASSET-USDT-SWAP`` is a live OKX instrument (public, no auth)."""
+    base = str(asset or "").strip().upper().replace("USDT", "").replace("-SWAP", "").replace("-", "")
+    if not base:
+        return False
+    # Prefer the cached universe when warm.
+    cached = _USDT_SWAP_BASES_CACHE.get("bases") or set()
+    if cached:
+        return base in cached
+    url = (base_url or CONFIG.get("okx_base_url") or "https://www.okx.com").rstrip("/")
+    inst_id = f"{base}-USDT-SWAP"
+    try:
+        resp = requests.get(
+            f"{url}/api/v5/public/instruments",
+            params={"instType": "SWAP", "instId": inst_id},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        payload = resp.json() or {}
+        rows = payload.get("data") if isinstance(payload, dict) else payload
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("instId") or "").upper() != inst_id:
+                continue
+            state = str(row.get("state") or "").lower()
+            return (not state) or state == "live"
+    except Exception as e:
+        logger.debug(f"OKX probe {inst_id} failed: {e}")
+    return False
+
+
 class OKXAPI:
     """Client for OKX perpetual SWAP (crypto) — demo via x-simulated-trading header."""
 
