@@ -831,7 +831,12 @@ class OKXAPI:
                 auth=False,
             )
         except Exception as e:
-            logger.error(f"OKX candles error for {symbol} {interval}: {e}")
+            msg = str(e)
+            # 51001 = instrument not on OKX (pair hunter noise). Don't alarm as ERROR.
+            if "51001" in msg:
+                logger.warning(f"OKX candles skip {symbol} {interval}: instrument not listed ({msg[:120]})")
+            else:
+                logger.error(f"OKX candles error for {symbol} {interval}: {e}")
             return []
 
         rows: List[List[Any]] = []

@@ -1543,6 +1543,14 @@ def main():
             asset = str(asset or "").upper()
             if not asset or asset in open_assets or _looks_like_forex(asset):
                 continue
+            # Pair hunter can still surface names that are not OKX USDT-SWAP (e.g. QNT) —
+            # skip before candle calls so we don't spam OKX 51001 errors.
+            try:
+                if hasattr(ex, "is_usdt_swap_tradable") and not ex.is_usdt_swap_tradable(asset):
+                    _mech_skip(asset, "not listed as OKX USDT-SWAP")
+                    continue
+            except Exception:
+                pass
             scanned += 1
             try:
                 c5 = await asyncio.to_thread(ex.fetch_candles, asset, "5m", 120)
