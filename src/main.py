@@ -29,6 +29,7 @@ from src.utils.prompt_utils import json_default, round_or_none, round_series
 from src.utils.trading_settings import get_trading_settings, get_max_leverage_for_asset, calculate_tp_sl_prices, calculate_allocation_usd, calculate_risk_based_allocation, resolve_stop_loss_usd, resolve_max_loss_usd, tighten_sl_to_max_loss
 from src.utils.volatility_stops import ExitPlan, build_exit_plan, normalize_tp_mode
 from src.utils import reentry_guard, profit_ladder, risk_governor
+from src.utils import mechanical_scalp as mech
 from src.utils.trend_filter import check_trend_agreement
 from src.utils.forex_session import is_forex_session_open, looks_like_forex as _looks_like_forex
 
@@ -55,6 +56,20 @@ _LIVE_SETTINGS: dict = {}
 
 # Most recent account equity, used to express the daily loss limit as a percentage.
 _LAST_KNOWN_EQUITY: dict = {}
+
+# Mechanical scalp book state (AI parked). Pending resting entry, per-asset last pullback
+# traded, rolling open interest, last skip reason per asset, and the persisted scorecard.
+_MECH_STATE: dict = {
+    "pending": None,          # {asset, ord_id, side, placed_at, stop, target, contracts, coins, ttl_s}
+    "last_signal_ts": {},     # asset -> ms of the pullback candle last traded
+    "skips": {},              # asset -> {"reason", "at", "metrics"}
+    "last_cycle_at": None,
+    "last_pair_refresh_at": None,
+    "managed_assets": set(),  # assets whose open position came from this book
+    "open_trades": {},        # asset -> fill record (survives active_trades reconciliation)
+}
+_MECH_OI = mech.OIHistory()
+_MECH_STATS = mech.ScalpStats()
 
 # Store original stdout/stderr BEFORE creating handlers (Railway logging fix)
 # This ensures handlers write to the original streams, not redirected ones
@@ -618,6 +633,13 @@ def main():
         risk_governor.record_close(key, pnl_usd, _LIVE_SETTINGS, equity=_LAST_KNOWN_EQUITY.get("value"))
         profit_ladder.clear(key)
         _EXIT_PLANS.pop(key, None)
+        if key in _MECH_STATE["managed_assets"] or mech.is_mechanical_mode(_LIVE_SETTINGS):
+            _MECH_STATE["managed_assets"].discard(key)
+            _MECH_STATE["open_trades"].pop(key, None)
+            try:
+                _MECH_STATS.record_close(float(pnl_usd or 0.0))
+            except Exception:
+                pass
         try:
             pnl_usd = float(pnl_usd or 0.0)
         except Exception:
@@ -861,6 +883,18 @@ def main():
             f"(≈ ${notional_preview:.2f} notional at {default_leverage}x). "
             f"Hard USD stop ceiling: {hard_sl}. Do NOT suggest allocation_usd above margin — system enforces it."
         )
+
+    def _venue_network() -> tuple:
+        """(network, label) for the dashboard badge — OKX demo is reported as 'demo'."""
+        if exchange_name == "aster":
+            return "mainnet", "Aster DEX"
+        if exchange_name == "binance":
+            testnet = bool(CONFIG.get("binance_testnet", False))
+            return ("testnet" if testnet else "mainnet"), f"Binance Futures ({'testnet' if testnet else 'mainnet'})"
+        if exchange_name == "okx":
+            demo = bool(CONFIG.get("okx_demo", True))
+            return ("demo" if demo else "mainnet"), f"OKX ({'DEMO' if demo else 'LIVE'})"
+        return "mainnet", exchange_name
 
     def _ex_for(asset: str):
         """Return the exchange that should handle this asset (IG for forex, OKX for crypto)."""
@@ -1120,6 +1154,10 @@ def main():
         max_loss = resolve_max_loss_usd(settings, default=6.0)
         stop_usd = -abs(max_loss)
         ui_sl = float(settings.get("stop_loss_percent") or CONFIG.get("stop_loss_percent") or 12)
+        if mech.is_mechanical_mode(settings):
+            # The $ stop is the only stop on the 1:1 book; a margin-ROI stop would fire first
+            # on a small-margin scalp and turn a $2 plan into a $0.75 loss.
+            ui_sl = 1e9
         try:
             tp_usd_f = float(settings.get("take_profit_usd") or 0)
         except (TypeError, ValueError):
@@ -1237,6 +1275,436 @@ def main():
                 logging.warning(f"Exit watcher error: {e}")
                 await asyncio.sleep(10)
 
+    # ═════════════════════════════════════════════════════════════════════
+    # MECHANICAL SCALP BOOK (AI parked). One resting post-only entry at a time,
+    # $-risk 1:1, exits by the always-on watcher plus exchange-side TP/SL algos.
+    # ═════════════════════════════════════════════════════════════════════
+    def _mech_skip(asset: str, reason: str, metrics: dict | None = None) -> None:
+        _MECH_STATE["skips"][asset] = {
+            "reason": reason,
+            "at": datetime.now(timezone.utc).isoformat(),
+            "metrics": metrics or {},
+        }
+
+    def _mech_diary(entry: dict) -> None:
+        try:
+            network, _ = _venue_network()
+            entry.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
+            entry.setdefault("mode", "mechanical")
+            entry.setdefault("network", network)
+            with open(diary_path, "a") as f:
+                f.write(json.dumps(entry, default=json_default) + "\n")
+        except Exception as e:
+            logging.debug(f"mechanical diary write failed: {e}")
+
+    async def _mech_reconcile_closed(open_assets: set) -> None:
+        """A TP/SL algo may have closed a book position on the exchange; book the result."""
+        ex = hyperliquid
+        for asset in list(_MECH_STATE["managed_assets"]):
+            if asset in open_assets:
+                continue
+            pending = _MECH_STATE.get("pending")
+            if pending and pending.get("asset") == asset:
+                continue
+            record = _MECH_STATE["open_trades"].get(asset) or next(
+                (tr for tr in active_trades if tr.get("asset") == asset), None
+            )
+            opened_at = None
+            if record and record.get("opened_at"):
+                try:
+                    opened_at = datetime.fromisoformat(str(record["opened_at"]).replace("Z", "+00:00"))
+                except Exception:
+                    opened_at = None
+            pnl = 0.0
+            fee = 0.0
+            exit_px = None
+            try:
+                fills = await ex.get_recent_fills(limit=50)
+            except Exception:
+                fills = []
+            for f_row in fills:
+                if str(f_row.get("coin") or f_row.get("symbol") or "").upper() != asset:
+                    continue
+                ts_raw = f_row.get("time")
+                try:
+                    ts_i = int(ts_raw)
+                    f_time = datetime.fromtimestamp(ts_i / 1000 if ts_i > 1e12 else ts_i, tz=timezone.utc)
+                except Exception:
+                    f_time = None
+                if opened_at and f_time and f_time < opened_at:
+                    continue
+                try:
+                    pnl += float(f_row.get("realizedPnl") or f_row.get("pnl") or 0)
+                    fee += abs(float(f_row.get("fee") or 0))
+                    exit_px = exit_px or float(f_row.get("px") or 0) or None
+                except (TypeError, ValueError):
+                    continue
+            was_long = bool(record.get("is_long", True)) if record else True
+            entry_px = record.get("entry_price") if record else None
+            add_event(f"🧾 Mechanical {asset} closed on exchange (algo TP/SL) — realised ${pnl:.2f}, fees ${fee:.2f}")
+            for tr in active_trades[:]:
+                if tr.get("asset") == asset:
+                    active_trades.remove(tr)
+            try:
+                await ex.cancel_all_orders(asset)
+            except Exception:
+                pass
+            _mech_diary({
+                "asset": asset,
+                "action": "close_tp" if pnl >= 0 else "close_stop_loss",
+                "entry_price": entry_px,
+                "exit_price": exit_px,
+                "reason": "exchange algo fill",
+                "pnl": round(pnl, 4),
+                "fee": round(fee, 4),
+            })
+            _MECH_STATE["open_trades"].pop(asset, None)
+            try:
+                await _record_pair_hunter_outcome(asset, pnl, 0.0, "close_exchange_algo", was_long=was_long)
+            except Exception:
+                _MECH_STATE["managed_assets"].discard(asset)
+            try:
+                await webhook_notifier.notify_exit(
+                    asset=asset,
+                    side="LONG" if was_long else "SHORT",
+                    entry_price=float(entry_px or exit_px or 0),
+                    exit_price=float(exit_px or 0),
+                    pnl_percent=0.0,
+                    pnl_usd=pnl,
+                    reason="exchange algo fill",
+                    size=float(record.get("amount") or 0) if record else 0.0,
+                )
+            except Exception:
+                pass
+
+    async def _mech_on_fill(pending: dict, order: dict, trading_settings: dict, cfg: dict) -> None:
+        """Entry filled: protect it with exchange-side TP/SL, register the trade, notify."""
+        ex = hyperliquid
+        asset = pending["asset"]
+        is_long = pending["side"] == "buy"
+        filled_coins = float(order.get("filled_coins") or 0) if order else 0.0
+        if filled_coins <= 0:
+            try:
+                st = await ex.get_user_state()
+                for p in st.get("positions", []):
+                    if str(p.get("symbol") or p.get("coin") or "").upper() == asset:
+                        filled_coins = abs(_safe_float(p.get("quantity") or p.get("szi"), 0))
+                        break
+            except Exception:
+                filled_coins = 0.0
+        if filled_coins <= 0:
+            add_event(f"⚠️  Mechanical {asset}: fill reported but no position found; nothing to protect")
+            return
+        avg_px = float((order or {}).get("avg_price") or pending.get("px") or 0) or float(pending.get("px") or 0)
+        stop_px = float(pending["stop"])
+        dist = abs(avg_px - stop_px) if avg_px else abs(float(pending["px"]) - stop_px)
+        target_px = (avg_px + dist) if is_long else (avg_px - dist)
+        td_mode = pending.get("td_mode") or "isolated"
+        sl_oid = tp_oid = None
+        try:
+            sl_row = await ex.place_stop_loss(asset, is_long, filled_coins, stop_px, td_mode=td_mode)
+            sl_oid = (ex.extract_oids(sl_row) or [None])[0]
+        except Exception as e:
+            add_event(f"⚠️  Mechanical {asset}: could not place exchange SL at {stop_px}: {e}")
+        try:
+            tp_row = await ex.place_take_profit(asset, is_long, filled_coins, target_px, td_mode=td_mode)
+            tp_oid = (ex.extract_oids(tp_row) or [None])[0]
+        except Exception as e:
+            add_event(f"⚠️  Mechanical {asset}: could not place exchange TP at {target_px}: {e}")
+        opened_at = datetime.now(timezone.utc).isoformat()
+        trade_record = {
+            "asset": asset,
+            "is_long": is_long,
+            "amount": filled_coins,
+            "entry_price": avg_px,
+            "tp_oid": tp_oid,
+            "sl_oid": sl_oid,
+            "exit_plan": f"mechanical 1:1 — stop {stop_px:.6g}, target {target_px:.6g}",
+            "opened_at": opened_at,
+            "mode": "mechanical",
+        }
+        active_trades.append(trade_record)
+        _MECH_STATE["open_trades"][asset] = dict(trade_record)
+        _MECH_STATE["managed_assets"].add(asset)
+        _MECH_STATS.record_filled()
+        risk_usd = abs(float(trading_settings.get("risk_per_trade_usd") or 2.0))
+        add_event(
+            f"✅ Mechanical {'LONG' if is_long else 'SHORT'} {asset} filled @ {avg_px:.6g} × {filled_coins:.6g} — "
+            f"SL {stop_px:.6g} / TP {target_px:.6g} (±${risk_usd:.2f})"
+        )
+        _mech_diary({
+            "asset": asset,
+            "action": "buy" if is_long else "sell",
+            "allocation_usd": round(filled_coins * avg_px / max(int(cfg["mech_leverage"]), 1), 2),
+            "amount": filled_coins,
+            "entry_price": avg_px,
+            "tp_price": target_px,
+            "tp_oid": tp_oid,
+            "sl_price": stop_px,
+            "sl_oid": sl_oid,
+            "exit_plan": f"±${risk_usd:.2f} (1:1), exit watcher + exchange algos",
+            "rationale": pending.get("rationale", "mechanical pullback"),
+            "reasoning": json.dumps(pending.get("metrics") or {}, default=json_default),
+            "order_result": str(order.get("raw") if order else pending.get("ord_id")),
+            "opened_at": opened_at,
+            "filled": True,
+        })
+        try:
+            await webhook_notifier.notify_entry(
+                asset=asset,
+                side="LONG" if is_long else "SHORT",
+                price=avg_px,
+                size=filled_coins,
+                leverage=int(cfg["mech_leverage"]),
+                reason=pending.get("rationale", "mechanical pullback"),
+            )
+        except Exception as e:
+            logging.debug(f"Webhook entry notification failed: {e}")
+
+    async def _mechanical_cycle(trading_settings: dict, state: dict, positions: list, candidate_assets: list) -> None:
+        """One pass: book exchange-side closes, manage the resting entry, then seek one new setup."""
+        ex = hyperliquid
+        cfg = mech.resolve_config(trading_settings, CONFIG)
+        now = datetime.now(timezone.utc)
+        _MECH_STATE["last_cycle_at"] = now.isoformat()
+        risk_usd = abs(float(trading_settings.get("risk_per_trade_usd") or 2.0))
+        leverage = int(cfg["mech_leverage"])
+        td_mode = "isolated"
+
+        open_assets = {
+            str(p.get("symbol") or p.get("coin") or "").upper()
+            for p in positions
+            if abs(_safe_float(p.get("quantity"), 0)) > 0
+        }
+        await _mech_reconcile_closed(open_assets)
+
+        # 1. Resting entry: filled → protect; expired → cancel (booking any partial fill).
+        pending = _MECH_STATE.get("pending")
+        if pending:
+            asset = pending["asset"]
+            order = await ex.get_order(asset, pending["ord_id"]) if hasattr(ex, "get_order") else {}
+            st = str(order.get("state") or "")
+            filled_coins = float(order.get("filled_coins") or 0)
+            try:
+                age_s = (now - datetime.fromisoformat(pending["placed_at"])).total_seconds()
+            except Exception:
+                age_s = 0.0
+            if st == "filled" or (asset in open_assets and st not in ("live", "partially_filled")):
+                await _mech_on_fill(pending, order, trading_settings, cfg)
+                _MECH_STATE["pending"] = None
+            elif st == "canceled":
+                add_event(f"↩️  Mechanical {asset} post-only order was cancelled by the exchange (would have crossed)")
+                _MECH_STATS.record_cancelled()
+                if filled_coins > 0 or asset in open_assets:
+                    await _mech_on_fill(pending, order, trading_settings, cfg)
+                _MECH_STATE["pending"] = None
+            elif age_s >= float(pending.get("ttl_s", 600)):
+                try:
+                    await ex.cancel_order(asset, pending["ord_id"])
+                except Exception as e:
+                    add_event(f"⚠️  Mechanical {asset}: cancel failed: {e}")
+                add_event(f"⌛ Mechanical {asset} entry not filled within {int(age_s // 60)}m — cancelled")
+                _MECH_STATS.record_cancelled()
+                _mech_diary({"asset": asset, "action": "entry_cancelled", "reason": "ttl", "ord_id": pending["ord_id"]})
+                try:
+                    order2 = await ex.get_order(asset, pending["ord_id"])
+                except Exception:
+                    order2 = {}
+                if float((order2 or {}).get("filled_coins") or 0) > 0 or asset in open_assets:
+                    await _mech_on_fill(pending, order2, trading_settings, cfg)
+                _MECH_STATE["pending"] = None
+            else:
+                remaining = int(float(pending.get("ttl_s", 600)) - age_s)
+                add_event(f"⏳ Mechanical resting {pending['side'].upper()} {asset} @ {pending['px']} — {remaining}s left")
+                return
+
+        # 2. Capacity, trading switch, session, breakers.
+        if len(open_assets) >= int(cfg["mech_max_positions"]):
+            logging.debug(f"Mechanical: {len(open_assets)} position(s) open — not seeking entries")
+            return
+        if not CONFIG.get("trading_enabled", True):
+            add_event("⏸️  Mechanical: TRADING_ENABLED=false — monitoring only")
+            return
+        ok, why = mech.session_open(now, cfg)
+        if not ok:
+            _mech_skip("*", why)
+            logging.info(f"Mechanical: {why}")
+            return
+        gov_ok, gov_reason = risk_governor.check_can_enter(trading_settings)
+        if not gov_ok:
+            _mech_skip("*", f"risk governor: {gov_reason}")
+            add_event(f"🚦 Mechanical ENTRY PAUSED: {gov_reason}")
+            return
+
+        # 3. Scan the hunted list in rank order; take the first clean setup.
+        available = _safe_float(state.get("balance"), 0.0)
+        scanned = 0
+        for asset in candidate_assets:
+            asset = str(asset or "").upper()
+            if not asset or asset in open_assets or _looks_like_forex(asset):
+                continue
+            scanned += 1
+            try:
+                c5 = await asyncio.to_thread(ex.fetch_candles, asset, "5m", 120)
+                c15 = await asyncio.to_thread(ex.fetch_candles, asset, "15m", 120)
+            except Exception as e:
+                _mech_skip(asset, f"candles unavailable: {e}")
+                continue
+            try:
+                funding = await ex.get_funding_rate(asset)
+                oi = await ex.get_open_interest(asset)
+            except Exception:
+                funding, oi = None, None
+            _MECH_OI.record(asset, oi)
+            oi_chg = _MECH_OI.change_pct(asset, float(cfg["mech_oi_window_minutes"]))
+            res = mech.evaluate(
+                asset, c5, c15,
+                funding=funding,
+                oi_change_pct=oi_chg,
+                cfg=cfg,
+                now=now,
+                last_signal_ts=_MECH_STATE["last_signal_ts"].get(asset),
+            )
+            if isinstance(res, mech.ScalpSkip):
+                _mech_skip(asset, res.reason, res.metrics)
+                continue
+
+            allowed, cooldown_reason = reentry_guard.check_entry(asset, res.is_long, trading_settings)
+            if not allowed:
+                _mech_skip(asset, cooldown_reason or "re-entry cooldown", res.metrics)
+                continue
+
+            bid, ask = await ex.get_book_top(asset)
+            entry_px = float(res.entry_price)
+            if res.is_long and bid:
+                entry_px = min(entry_px, float(bid))
+            elif (not res.is_long) and ask:
+                entry_px = max(entry_px, float(ask))
+            dist = abs(entry_px - res.stop_price)
+            if dist <= 0 or entry_px <= 0:
+                _mech_skip(asset, "entry would sit beyond the stop", res.metrics)
+                continue
+            res.entry_price = entry_px
+            res.target_price = entry_px + dist if res.is_long else entry_px - dist
+            res.stop_distance_pct = dist / entry_px * 100.0
+
+            try:
+                specs = ex.get_instrument_specs(asset)
+            except Exception as e:
+                _mech_skip(asset, f"instrument specs unavailable: {e}", res.metrics)
+                continue
+            sized = mech.size_position(
+                res,
+                risk_usd=risk_usd,
+                leverage=leverage,
+                ct_val=specs["ct_val"],
+                lot_sz=specs["lot_sz"],
+                min_sz=specs["min_sz"],
+                available_balance=available,
+                bid=bid,
+                ask=ask,
+                cfg=cfg,
+            )
+            if isinstance(sized, mech.ScalpSkip):
+                _mech_skip(asset, sized.reason, res.metrics)
+                continue
+
+            rationale = (
+                f"15m {res.metrics.get('regime')} (ADX {res.metrics.get('adx_15m')}, ATR {res.metrics.get('atr_15m_pct')}%), "
+                f"5m pullback to basis, close back {'above' if res.is_long else 'below'}, "
+                f"RVOL {res.metrics.get('rvol')}, RSI {res.metrics.get('rsi_5m')}, stop {res.stop_distance_pct:.2f}%"
+            )
+            try:
+                row = await ex.place_limit_order(
+                    asset, res.side, sized.coin_qty, entry_px,
+                    post_only=True, leverage=leverage, td_mode=td_mode,
+                )
+            except Exception as e:
+                add_event(f"❌ Mechanical {asset} entry rejected: {e}")
+                _mech_skip(asset, f"order rejected: {e}", res.metrics)
+                continue
+            ord_id = row.get("ordId") if isinstance(row, dict) else None
+            if not ord_id:
+                add_event(f"❌ Mechanical {asset}: no ordId returned ({row})")
+                _mech_skip(asset, "no order id returned", res.metrics)
+                continue
+            ttl_s = int(cfg["mech_entry_ttl_candles"]) * 300
+            _MECH_STATE["pending"] = {
+                "asset": asset,
+                "ord_id": str(ord_id),
+                "side": res.side,
+                "px": row.get("px", entry_px),
+                "stop": res.stop_price,
+                "target": res.target_price,
+                "contracts": sized.contracts,
+                "coins": sized.coin_qty,
+                "placed_at": now.isoformat(),
+                "ttl_s": ttl_s,
+                "td_mode": td_mode,
+                "rationale": rationale,
+                "metrics": res.metrics,
+            }
+            _MECH_STATE["last_signal_ts"][asset] = res.signal_ts
+            _MECH_STATE["skips"].pop(asset, None)
+            _MECH_STATS.record_placed()
+            add_event(
+                f"🎯 Mechanical {res.side.upper()} {asset}: post-only @ {row.get('px', entry_px)} × {sized.coin_qty:.6g} "
+                f"(${sized.notional_usd:.0f} notional, ${sized.margin_usd:.2f} margin @ {leverage}x isolated) — "
+                f"stop {res.stop_price:.6g} / target {res.target_price:.6g} = ±${sized.risk_usd:.2f}; "
+                f"cancel in {ttl_s // 60}m if unfilled. {rationale}"
+            )
+            _mech_diary({
+                "asset": asset,
+                "action": "entry_placed",
+                "side": res.side,
+                "price": row.get("px", entry_px),
+                "amount": sized.coin_qty,
+                "sl_price": res.stop_price,
+                "tp_price": res.target_price,
+                "allocation_usd": round(sized.margin_usd, 2),
+                "rationale": rationale,
+                "reasoning": json.dumps(res.metrics, default=json_default),
+                "ord_id": str(ord_id),
+            })
+            try:
+                await webhook_notifier.notify_system_decision([{
+                    "asset": asset,
+                    "proposed_action": res.side,
+                    "final_status": "placed",
+                    "detail": rationale[:140],
+                }])
+            except Exception:
+                pass
+            return
+        if scanned and not _MECH_STATE.get("pending"):
+            logging.info(f"Mechanical: scanned {scanned} asset(s), no clean setup this cycle")
+
+    def _mechanical_snapshot() -> dict:
+        settings = dict(_LIVE_SETTINGS) if _LIVE_SETTINGS else {}
+        cfg = mech.resolve_config(settings, CONFIG)
+        network, label = _venue_network()
+        return {
+            "mode": "mechanical" if mech.is_mechanical_mode(settings) else "ai",
+            "network": network,
+            "network_label": label,
+            "risk_usd": abs(_safe_float(settings.get("risk_per_trade_usd"), 2.0)),
+            "leverage": int(cfg["mech_leverage"]),
+            "cycle_seconds": int(cfg["mech_cycle_seconds"]),
+            "session": {
+                "start_utc": int(cfg["mech_session_start_utc"]),
+                "end_utc": int(cfg["mech_session_end_utc"]),
+                "weekends": bool(cfg["mech_trade_weekends"]),
+                "open_now": mech.session_open(datetime.now(timezone.utc), cfg)[0],
+            },
+            "pending": _MECH_STATE.get("pending"),
+            "managed_assets": sorted(_MECH_STATE["managed_assets"]),
+            "skips": _MECH_STATE.get("skips", {}),
+            "last_cycle_at": _MECH_STATE.get("last_cycle_at"),
+            "stats": _MECH_STATS.summary(),
+            "risk_governor": risk_governor.status(),
+            "reentry_cooldowns": reentry_guard.active_cooldowns(),
+        }
+
     async def run_loop():
         """Main trading loop that gathers data, calls the agent, and executes trades."""
         nonlocal invocation_count, initial_account_value
@@ -1268,6 +1736,9 @@ def main():
             total_return_pct = ((account_value - initial_account_value) / initial_account_value * 100.0) if initial_account_value else 0.0
 
             positions = []
+            # Defined up front: the mechanical branch skips the market-data gather that
+            # normally creates this, and the active-trade summary below reads it.
+            asset_prices = {}
             current_time = datetime.now(timezone.utc)
             
             for pos_wrap in state['positions']:
@@ -1323,6 +1794,8 @@ def main():
                     last_cache_update[coin] = current_time
                     logging.info(f"📊 Position PnL cached for {coin}: ${unrealized_pnl:.2f} ({roi_percent:.2f}% ROI) | Entry: ${entry_price:.2f} | Size: {position_size:.6f}")
                 
+                if coin and current_px:
+                    asset_prices[coin] = current_px
                 positions.append({
                     "symbol": coin,
                     "quantity": round_or_none(pos.get('szi'), 6),
@@ -1502,6 +1975,13 @@ def main():
                     run_loop._pair_hunter_counter >= pair_hunter_refresh_interval
                     or len(run_loop._last_hunted_assets) == 0
                 )
+                # Mechanical cycles run every ~60s; rescan the market on a clock, not per cycle.
+                if should_refresh and run_loop._last_hunted_assets and mech.is_mechanical_mode(_LIVE_SETTINGS):
+                    last_refresh = _MECH_STATE.get("last_pair_refresh_at")
+                    refresh_min = float(mech.resolve_config(_LIVE_SETTINGS, CONFIG)["mech_pair_refresh_minutes"])
+                    if last_refresh and (current_time - last_refresh).total_seconds() < refresh_min * 60:
+                        should_refresh = False
+                        run_loop._pair_hunter_counter = 0
 
                 # Get current positions (always include these)
                 positions_assets = set()
@@ -1527,8 +2007,10 @@ def main():
                                 add_event("⚠️ Pair Hunter: all candidates filtered out (not on OKX).")
                             hunted_assets = _rank_hunted_assets_by_performance(hunted_assets)
                             validated_hunts = []
+                            mechanical_now = mech.is_mechanical_mode(_LIVE_SETTINGS)
                             for hunted_asset in hunted_assets:
-                                if _has_required_ta_data(hunted_asset):
+                                # Mechanical mode reads OKX candles directly; the TAAPI check is for the LLM book.
+                                if mechanical_now or _has_required_ta_data(hunted_asset):
                                     await _record_pair_hunter_data_success(hunted_asset)
                                     validated_hunts.append(hunted_asset)
                                 else:
@@ -1537,6 +2019,7 @@ def main():
                             hunted_assets = validated_hunts
                         run_loop._last_hunted_assets = hunted_assets
                         run_loop._pair_hunter_counter = 0
+                        _MECH_STATE["last_pair_refresh_at"] = current_time
                     except Exception as e:
                         add_event(f"⚠️ Pair Hunter error: {e}. Using cached/fallback assets.")
                         hunted_assets = []
@@ -1636,6 +2119,32 @@ def main():
             _LIVE_SETTINGS.update(trading_settings)
             _LAST_KNOWN_EQUITY["value"] = float(account_value or 0.0) or _LAST_KNOWN_EQUITY.get("value")
             default_leverage = trading_settings["leverage"]
+
+            # ═════════════════════════════════════════════════════════════════
+            # MECHANICAL MODE: DeepSeek is parked. No TAAPI pulls, no prompt, no
+            # LLM call — the scalp helper decides from OKX candles and the cycle
+            # runs every ~60s so a 5m setup is taken on the next candle.
+            # ═════════════════════════════════════════════════════════════════
+            if mech.is_mechanical_mode(trading_settings):
+                mech_cfg = mech.resolve_config(trading_settings, CONFIG)
+                if not getattr(run_loop, "_mech_announced", False):
+                    network_now, label_now = _venue_network()
+                    add_event(
+                        f"🤖 MECHANICAL MODE on {label_now}: AI parked. ±${abs(_safe_float(trading_settings.get('risk_per_trade_usd'), 2.0)):.2f} "
+                        f"1:1 book, {int(mech_cfg['mech_leverage'])}x isolated, cycle {int(mech_cfg['mech_cycle_seconds'])}s, "
+                        f"session {int(mech_cfg['mech_session_start_utc']):02d}–{int(mech_cfg['mech_session_end_utc']):02d} UTC weekdays"
+                    )
+                    run_loop._mech_announced = True
+                candidates = [a for a in decision_assets if not _looks_like_forex(a)]
+                try:
+                    await _mechanical_cycle(trading_settings, state, positions, candidates)
+                except Exception as e:
+                    import traceback
+                    add_event(f"❌ Mechanical cycle error: {e}")
+                    logging.error(f"Mechanical cycle error: {traceback.format_exc()}")
+                await asyncio.sleep(max(15, int(mech_cfg["mech_cycle_seconds"])))
+                continue
+            run_loop._mech_announced = False
 
             # Gather data for ALL assets first
             market_sections = []
@@ -4334,6 +4843,13 @@ def main():
                 "timestamp": datetime.now(timezone.utc).isoformat()
             }, status=500)
 
+    async def handle_mechanical(request):
+        """Mechanical scalp book: mode, demo/live network, resting order, skip reasons, scorecard."""
+        try:
+            return web.json_response(_mechanical_snapshot(), dumps=lambda o: json.dumps(o, default=json_default))
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
     async def handle_status(request):
         """Return API status and basic account info."""
         try:
@@ -4342,23 +4858,14 @@ def main():
                 state = await asyncio.wait_for(hyperliquid.get_user_state(), timeout=3.0)
             except asyncio.TimeoutError:
                 # Return cached/fallback status if API is slow
-                if exchange_name == "aster":
-                    network_label = "Aster DEX"
-                    network = "mainnet"
-                elif exchange_name == "binance":
-                    testnet = CONFIG.get("binance_testnet", False)
-                    network_label = f"Binance Futures ({'testnet' if testnet else 'mainnet'})"
-                    network = "testnet" if testnet else "mainnet"
-                else:
-                    network_label = exchange_name
-                    network = "mainnet"
-                
+                network, network_label = _venue_network()
                 return web.json_response({
                     "connected": True,
                     "status": "online",
                     "network": network,
                     "network_label": network_label,
                     "exchange": exchange_name,
+                    "decision_mode": "mechanical" if mech.is_mechanical_mode(_LIVE_SETTINGS) else "ai",
                     "balance": 0,
                     "account_value": 0,
                     "positions_count": 0,
@@ -4366,23 +4873,14 @@ def main():
                     "warning": "Status check timed out, using cached data"
                 })
             
-            if exchange_name == "aster":
-                network_label = "Aster DEX"
-                network = "mainnet"
-            elif exchange_name == "binance":
-                testnet = CONFIG.get("binance_testnet", False)
-                network_label = f"Binance Futures ({'testnet' if testnet else 'mainnet'})"
-                network = "testnet" if testnet else "mainnet"
-            else:
-                network_label = exchange_name
-                network = "mainnet"
-            
+            network, network_label = _venue_network()
             return web.json_response({
                 "connected": True,
                 "status": "online",
                 "network": network,
                 "network_label": network_label,
                 "exchange": exchange_name,
+                "decision_mode": "mechanical" if mech.is_mechanical_mode(_LIVE_SETTINGS) else "ai",
                 "balance": round(state.get('balance', 0), 2),
                 "account_value": round(state.get('total_value', 0), 2),
                 "positions_count": len(state.get('positions', [])),
@@ -4940,6 +5438,7 @@ def main():
             
             # Format trades for frontend
             formatted_trades = []
+            venue_network, _ = _venue_network()
             for trade in trades:
                 symbol = str(trade.get('symbol') or trade.get('coin') or '').replace('USDT', '').replace('-SWAP', '')
                 side = str(trade.get('side', '')).lower()
@@ -4988,6 +5487,7 @@ def main():
                     'fee': abs(fee),
                     'pnl': pnl,
                     'timestamp': timestamp_iso,
+                    'network': venue_network,
                 })
             
             # Sort by timestamp descending (newest first)
@@ -4996,7 +5496,8 @@ def main():
             return web.json_response({
                 'trades': formatted_trades,
                 'count': len(formatted_trades),
-                'source': exchange_name
+                'source': exchange_name,
+                'network': venue_network,
             })
         except Exception as e:
             logger.error(f"Error in handle_trades: {e}")
@@ -5438,6 +5939,7 @@ def main():
         app.router.add_get('/api/prices', handle_prices)
         app.router.add_get('/api/trading-info', handle_trading_info)  # Add trading info endpoint
         app.router.add_get('/api/trades', handle_trades)  # Add trades endpoint
+        app.router.add_get('/api/mechanical', handle_mechanical)  # Mechanical scalp book status
         app.router.add_post('/api/test', handle_status)  # Alias for compatibility
         app.router.add_post('/api/alert/signal', handle_alert_signal)
         app.router.add_post('/api/position-protection', handle_position_protection)

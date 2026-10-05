@@ -9,6 +9,7 @@ from typing import Dict, Any, Optional
 from pathlib import Path
 from src.config_loader import CONFIG
 from src.utils.position_sizing import calculate_position_size, calculate_profit
+from src.utils.mechanical_scalp import DEFAULTS as MECH_DEFAULTS, apply_mechanical_overrides, is_mechanical_mode
 
 CACHE_DIR = Path("settings_cache")
 CACHE_FILE = CACHE_DIR / "trading_settings_cache.json"
@@ -319,7 +320,12 @@ async def get_trading_settings() -> Dict[str, Any]:
                         # LLM configuration
                         "llm_model": data.get("llm_model", "deepseek-reasoner"),
                         "deepseek_max_tokens": int(data.get("deepseek_max_tokens", 20000)),
+                        "decision_mode": data.get("decision_mode"),
                     }
+                    # Mechanical scalp knobs pass straight through; defaults live in the helper.
+                    for mech_key in MECH_DEFAULTS:
+                        if data.get(mech_key) is not None:
+                            settings[mech_key] = data.get(mech_key)
                     # Keep hard USD stop aligned to risk_per_trade_usd (never looser).
                     try:
                         risk_f = float(settings.get("risk_per_trade_usd") or 0)
@@ -340,7 +346,11 @@ async def get_trading_settings() -> Dict[str, Any]:
                         settings["stop_loss_usd"] = -abs(
                             float(settings.get("risk_per_trade_usd") or CONFIG.get("risk_per_trade_usd") or 6.0)
                         )
-                    settings = align_take_profit_to_risk(settings, reward_multiple=2.0)
+                    if is_mechanical_mode(settings):
+                        # 1:1 book — the 2R alignment must not lift the $ target above the $ risk.
+                        settings = apply_mechanical_overrides(settings)
+                    else:
+                        settings = align_take_profit_to_risk(settings, reward_multiple=2.0)
                     _save_cached_trading_settings(settings)
                     return _apply_env_bool_overrides(settings)
                 else:
@@ -450,6 +460,8 @@ async def get_trading_settings() -> Dict[str, Any]:
         "llm_model": CONFIG.get("llm_model", "deepseek-reasoner"),
         "deepseek_max_tokens": CONFIG.get("deepseek_max_tokens", 20000),
     }
+    if is_mechanical_mode(fallback_settings):
+        return _apply_env_bool_overrides(apply_mechanical_overrides(fallback_settings))
     return _apply_env_bool_overrides(align_take_profit_to_risk(fallback_settings, reward_multiple=2.0))
 
 

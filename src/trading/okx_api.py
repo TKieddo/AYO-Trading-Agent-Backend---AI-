@@ -8,9 +8,10 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlencode
 
 import requests
@@ -286,19 +287,84 @@ class OKXAPI:
             return 0.0
 
     # --------------------------------------------------------------- trading
-    async def set_leverage(self, asset: str, leverage: int):
+    def get_instrument_specs(self, asset: str) -> Dict[str, float]:
+        """Contract value, lot size, min size and tick size for sizing/rounding."""
+        info = self._get_instrument(self._to_inst_id(asset))
+        return {
+            "ct_val": float(info.get("ctVal") or 1),
+            "lot_sz": float(info.get("lotSz") or 1),
+            "min_sz": float(info.get("minSz") or info.get("lotSz") or 1),
+            "tick_sz": float(info.get("tickSz") or 0) or 0.0,
+        }
+
+    def _round_price(self, asset: str, price: float, side: str) -> str:
+        """Snap to tick size, rounding toward the passive side so post-only never crosses."""
+        tick = self.get_instrument_specs(asset)["tick_sz"]
+        px = float(price)
+        if tick > 0:
+            steps = px / tick
+            steps = math.floor(steps) if side.lower() == "buy" else math.ceil(steps)
+            px = steps * tick
+        decimals = max(0, -int(math.floor(math.log10(tick)))) if tick > 0 else 8
+        return f"{px:.{decimals}f}"
+
+    async def get_book_top(self, asset: str) -> Tuple[Optional[float], Optional[float]]:
+        """Best (bid, ask) from the ticker; None when unavailable."""
+        inst_id = self._to_inst_id(asset)
+        try:
+            data = await self._retry(
+                lambda: self._request(
+                    "GET", "/api/v5/market/ticker", params={"instId": inst_id}, auth=False
+                )
+            )
+            row = data[0] if isinstance(data, list) and data else {}
+            bid = float(row["bidPx"]) if row.get("bidPx") else None
+            ask = float(row["askPx"]) if row.get("askPx") else None
+            return bid, ask
+        except Exception as e:
+            logger.debug(f"OKX book top {asset}: {e}")
+            return None, None
+
+    async def _position_td_mode(self, asset: str) -> Optional[str]:
+        """Margin mode of the live position, so reduce-only closes match it."""
+        inst_id = self._to_inst_id(asset)
+        try:
+            rows = await self._retry(
+                lambda: self._request(
+                    "GET", "/api/v5/account/positions", params={"instType": "SWAP", "instId": inst_id}
+                )
+            )
+            for pos in rows if isinstance(rows, list) else []:
+                try:
+                    if abs(float(pos.get("pos") or 0)) > 0 and pos.get("mgnMode"):
+                        return str(pos["mgnMode"]).lower()
+                except (TypeError, ValueError):
+                    continue
+        except Exception as e:
+            logger.debug(f"OKX position td_mode lookup {asset}: {e}")
+        return None
+
+    async def set_leverage(self, asset: str, leverage: int, td_mode: Optional[str] = None):
         inst_id = self._to_inst_id(asset)
         lev = str(int(leverage or self.default_leverage))
+        mode = (td_mode or self.td_mode).lower()
         body: Dict[str, Any] = {
             "instId": inst_id,
             "lever": lev,
-            "mgnMode": self.td_mode,
+            "mgnMode": mode,
         }
+        if mode == "isolated" and self.pos_mode not in ("net", "net_mode"):
+            body["posSide"] = "long"
         try:
             await self._retry(
                 lambda: self._request("POST", "/api/v5/account/set-leverage", json_body=body)
             )
-            logger.info(f"OKX set leverage {inst_id} → {lev}x ({self.td_mode})")
+            if mode == "isolated" and "posSide" in body:
+                body_short = dict(body, posSide="short")
+                await self._retry(
+                    lambda: self._request("POST", "/api/v5/account/set-leverage", json_body=body_short)
+                )
+            logger.info(f"OKX set leverage {inst_id} → {lev}x ({mode})")
         except Exception as e:
             logger.warning(f"OKX set_leverage {inst_id} failed: {e}")
 
@@ -335,14 +401,30 @@ class OKXAPI:
         await self.set_leverage(asset, leverage or self.default_leverage)
         return await self._place_market(asset, "sell", amount, reduce_only=reduce_only)
 
+    async def _resolve_td_mode(self, asset: str, td_mode: Optional[str], reduce_only: bool) -> str:
+        """Explicit override wins; closes follow the open position's margin mode."""
+        if td_mode:
+            return td_mode.lower()
+        if reduce_only:
+            live = await self._position_td_mode(asset)
+            if live:
+                return live
+        return self.td_mode
+
     async def _place_market(
-        self, asset: str, side: str, amount: float, reduce_only: bool = False
+        self,
+        asset: str,
+        side: str,
+        amount: float,
+        reduce_only: bool = False,
+        td_mode: Optional[str] = None,
     ) -> Dict[str, Any]:
         inst_id = self._to_inst_id(asset)
         sz = self._contracts_from_coins(asset, amount)
+        mode = await self._resolve_td_mode(asset, td_mode, reduce_only)
         body: Dict[str, Any] = {
             "instId": inst_id,
-            "tdMode": self.td_mode,
+            "tdMode": mode,
             "side": side.lower(),
             "ordType": "market",
             "sz": sz,
@@ -358,21 +440,96 @@ class OKXAPI:
         )
         row = result[0] if isinstance(result, list) and result else (result or {})
         logger.info(
-            f"OKX {side.upper()} {inst_id} sz={sz} reduceOnly={reduce_only} "
+            f"OKX {side.upper()} {inst_id} sz={sz} reduceOnly={reduce_only} tdMode={mode} "
             f"ordId={row.get('ordId')} clOrdId={row.get('clOrdId')}"
         )
         return row if isinstance(row, dict) else {"raw": result}
 
-    async def place_take_profit(self, asset: str, is_long: bool, quantity: float, tp_price: float):
+    async def place_limit_order(
+        self,
+        asset: str,
+        side: str,
+        amount: float,
+        price: float,
+        *,
+        post_only: bool = True,
+        leverage: Optional[int] = None,
+        td_mode: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Resting limit entry (``post_only`` → OKX cancels it rather than taking liquidity)."""
+        inst_id = self._to_inst_id(asset)
+        mode = (td_mode or self.td_mode).lower()
+        await self.set_leverage(asset, leverage or self.default_leverage, td_mode=mode)
+        sz = self._contracts_from_coins(asset, amount)
+        px = self._round_price(asset, price, side)
+        body: Dict[str, Any] = {
+            "instId": inst_id,
+            "tdMode": mode,
+            "side": side.lower(),
+            "ordType": "post_only" if post_only else "limit",
+            "sz": sz,
+            "px": px,
+        }
+        pos_side = self._pos_side_for(side, reduce_only=False)
+        if pos_side:
+            body["posSide"] = pos_side
+        result = await self._retry(
+            lambda: self._request("POST", "/api/v5/trade/order", json_body=body)
+        )
+        row = result[0] if isinstance(result, list) and result else (result or {})
+        logger.info(
+            f"OKX LIMIT {side.upper()} {inst_id} sz={sz} px={px} postOnly={post_only} "
+            f"tdMode={mode} ordId={row.get('ordId')}"
+        )
+        if isinstance(row, dict):
+            row.setdefault("px", px)
+            row.setdefault("sz", sz)
+            return row
+        return {"raw": result, "px": px, "sz": sz}
+
+    async def get_order(self, asset: str, ord_id: str) -> Dict[str, Any]:
+        """Order detail: ``state`` is live | partially_filled | filled | canceled."""
+        inst_id = self._to_inst_id(asset)
+        try:
+            data = await self._retry(
+                lambda: self._request(
+                    "GET", "/api/v5/trade/order", params={"instId": inst_id, "ordId": str(ord_id)}
+                )
+            )
+            row = data[0] if isinstance(data, list) and data else (data or {})
+            if not isinstance(row, dict):
+                return {}
+            info = self._get_instrument(inst_id)
+            ct_val = float(info.get("ctVal") or 1)
+            filled_ct = float(row.get("accFillSz") or 0)
+            return {
+                "state": str(row.get("state") or "").lower(),
+                "filled_contracts": filled_ct,
+                "filled_coins": filled_ct * ct_val,
+                "avg_price": float(row.get("avgPx") or 0) or None,
+                "price": float(row.get("px") or 0) or None,
+                "side": row.get("side"),
+                "fee": float(row.get("fee") or 0),
+                "raw": row,
+            }
+        except Exception as e:
+            logger.debug(f"OKX get_order {ord_id} {asset}: {e}")
+            return {}
+
+    async def place_take_profit(
+        self, asset: str, is_long: bool, quantity: float, tp_price: float, td_mode: Optional[str] = None
+    ):
         """Algo take-profit (market on trigger)."""
         return await self._place_algo(
-            asset, is_long=is_long, quantity=quantity, trigger_px=tp_price, kind="tp"
+            asset, is_long=is_long, quantity=quantity, trigger_px=tp_price, kind="tp", td_mode=td_mode
         )
 
-    async def place_stop_loss(self, asset: str, is_long: bool, quantity: float, sl_price: float):
+    async def place_stop_loss(
+        self, asset: str, is_long: bool, quantity: float, sl_price: float, td_mode: Optional[str] = None
+    ):
         """Algo stop-loss (market on trigger)."""
         return await self._place_algo(
-            asset, is_long=is_long, quantity=quantity, trigger_px=sl_price, kind="sl"
+            asset, is_long=is_long, quantity=quantity, trigger_px=sl_price, kind="sl", td_mode=td_mode
         )
 
     async def _place_algo(
@@ -382,13 +539,15 @@ class OKXAPI:
         quantity: float,
         trigger_px: float,
         kind: str,
+        td_mode: Optional[str] = None,
     ) -> Dict[str, Any]:
         inst_id = self._to_inst_id(asset)
         sz = self._contracts_from_coins(asset, quantity)
         side = "sell" if is_long else "buy"
+        mode = await self._resolve_td_mode(asset, td_mode, reduce_only=True)
         body: Dict[str, Any] = {
             "instId": inst_id,
-            "tdMode": self.td_mode,
+            "tdMode": mode,
             "side": side,
             "ordType": "conditional",
             "sz": sz,
@@ -514,6 +673,7 @@ class OKXAPI:
                     "liquidationPx": pos.get("liqPx"),
                     "okx_inst_id": inst_id,
                     "okx_pos": pos_sz,
+                    "okx_mgn_mode": (pos.get("mgnMode") or self.td_mode),
                 })
 
             return {
