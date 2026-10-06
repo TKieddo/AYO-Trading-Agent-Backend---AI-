@@ -1396,9 +1396,17 @@ def main():
             add_event(f"⚠️  Mechanical {asset}: fill reported but no position found; nothing to protect")
             return
         avg_px = float((order or {}).get("avg_price") or pending.get("px") or 0) or float(pending.get("px") or 0)
-        stop_px = float(pending["stop"])
-        dist = abs(avg_px - stop_px) if avg_px else abs(float(pending["px"]) - stop_px)
-        target_px = (avg_px + dist) if is_long else (avg_px - dist)
+        tp_usd = abs(float(trading_settings.get("take_profit_usd") or cfg.get("mech_take_profit_usd") or 2.0))
+        sl_usd = abs(float(trading_settings.get("stop_loss_usd") or cfg.get("mech_stop_loss_usd") or tp_usd))
+        # Pin TP/SL to fill price so the $2 target is exact after slippage.
+        if filled_coins > 0 and avg_px > 0:
+            dist_tp = tp_usd / filled_coins
+            dist_sl = sl_usd / filled_coins
+            stop_px = (avg_px - dist_sl) if is_long else (avg_px + dist_sl)
+            target_px = (avg_px + dist_tp) if is_long else (avg_px - dist_tp)
+        else:
+            stop_px = float(pending["stop"])
+            target_px = float(pending.get("target") or pending["stop"])
         td_mode = pending.get("td_mode") or "isolated"
         sl_oid = tp_oid = None
         try:
@@ -1409,8 +1417,10 @@ def main():
         try:
             tp_row = await ex.place_take_profit(asset, is_long, filled_coins, target_px, td_mode=td_mode)
             tp_oid = (ex.extract_oids(tp_row) or [None])[0]
+            if not tp_oid:
+                add_event(f"⚠️  Mechanical {asset}: TP place returned no oid — exit watcher will still close at +${tp_usd:.2f}")
         except Exception as e:
-            add_event(f"⚠️  Mechanical {asset}: could not place exchange TP at {target_px}: {e}")
+            add_event(f"⚠️  Mechanical {asset}: could not place exchange TP at {target_px}: {e} — exit watcher will close at +${tp_usd:.2f}")
         opened_at = datetime.now(timezone.utc).isoformat()
         trade_record = {
             "asset": asset,
@@ -1419,7 +1429,7 @@ def main():
             "entry_price": avg_px,
             "tp_oid": tp_oid,
             "sl_oid": sl_oid,
-            "exit_plan": f"mechanical 1:1 — stop {stop_px:.6g}, target {target_px:.6g}",
+            "exit_plan": f"mechanical ${tp_usd:.2f} TP / ${sl_usd:.2f} SL on ${float(trading_settings.get('margin_per_position') or 30):.0f} margin",
             "opened_at": opened_at,
             "mode": "mechanical",
         }
@@ -1427,10 +1437,9 @@ def main():
         _MECH_STATE["open_trades"][asset] = dict(trade_record)
         _MECH_STATE["managed_assets"].add(asset)
         _MECH_STATS.record_filled()
-        risk_usd = abs(float(trading_settings.get("risk_per_trade_usd") or 2.0))
         add_event(
             f"✅ Mechanical {'LONG' if is_long else 'SHORT'} {asset} filled @ {avg_px:.6g} × {filled_coins:.6g} — "
-            f"SL {stop_px:.6g} / TP {target_px:.6g} (±${risk_usd:.2f})"
+            f"SL {stop_px:.6g} (−${sl_usd:.2f}) / TP {target_px:.6g} (+${tp_usd:.2f})"
         )
         _mech_diary({
             "asset": asset,
@@ -1442,7 +1451,7 @@ def main():
             "tp_oid": tp_oid,
             "sl_price": stop_px,
             "sl_oid": sl_oid,
-            "exit_plan": f"±${risk_usd:.2f} (1:1), exit watcher + exchange algos",
+            "exit_plan": f"+${tp_usd:.2f} TP / −${sl_usd:.2f} SL, exchange algo + exit watcher",
             "rationale": pending.get("rationale", "mechanical pullback"),
             "reasoning": json.dumps(pending.get("metrics") or {}, default=json_default),
             "order_result": str(order.get("raw") if order else pending.get("ord_id")),
@@ -1467,7 +1476,14 @@ def main():
         cfg = mech.resolve_config(trading_settings, CONFIG)
         now = datetime.now(timezone.utc)
         _MECH_STATE["last_cycle_at"] = now.isoformat()
-        risk_usd = abs(float(trading_settings.get("risk_per_trade_usd") or 2.0))
+        risk_usd = abs(float(trading_settings.get("risk_per_trade_usd") or cfg.get("mech_stop_loss_usd") or 2.0))
+        margin_usd = abs(float(
+            trading_settings.get("margin_per_position")
+            or cfg.get("mech_margin_usd")
+            or 30.0
+        ))
+        tp_usd = abs(float(trading_settings.get("take_profit_usd") or cfg.get("mech_take_profit_usd") or 2.0))
+        sl_usd = abs(float(trading_settings.get("stop_loss_usd") or cfg.get("mech_stop_loss_usd") or tp_usd))
         leverage = int(cfg["mech_leverage"])
         td_mode = "isolated"
 
@@ -1588,19 +1604,17 @@ def main():
                 entry_px = min(entry_px, float(bid))
             elif (not res.is_long) and ask:
                 entry_px = max(entry_px, float(ask))
-            dist = abs(entry_px - res.stop_price)
-            if dist <= 0 or entry_px <= 0:
-                _mech_skip(asset, "entry would sit beyond the stop", res.metrics)
+            if entry_px <= 0:
+                _mech_skip(asset, "invalid entry price", res.metrics)
                 continue
             res.entry_price = entry_px
-            res.target_price = entry_px + dist if res.is_long else entry_px - dist
-            res.stop_distance_pct = dist / entry_px * 100.0
 
             try:
                 specs = ex.get_instrument_specs(asset)
             except Exception as e:
                 _mech_skip(asset, f"instrument specs unavailable: {e}", res.metrics)
                 continue
+            # Fixed $30 margin book: size by margin, then pin SL/TP to ±$2 USD.
             sized = mech.size_position(
                 res,
                 risk_usd=risk_usd,
@@ -1612,6 +1626,9 @@ def main():
                 bid=bid,
                 ask=ask,
                 cfg=cfg,
+                margin_usd=margin_usd,
+                take_profit_usd=tp_usd,
+                stop_loss_usd=sl_usd,
             )
             if isinstance(sized, mech.ScalpSkip):
                 _mech_skip(asset, sized.reason, res.metrics)
@@ -1620,7 +1637,8 @@ def main():
             rationale = (
                 f"15m {res.metrics.get('regime')} (ADX {res.metrics.get('adx_15m')}, ATR {res.metrics.get('atr_15m_pct')}%), "
                 f"5m pullback to basis, close back {'above' if res.is_long else 'below'}, "
-                f"RVOL {res.metrics.get('rvol')}, RSI {res.metrics.get('rsi_5m')}, stop {res.stop_distance_pct:.2f}%"
+                f"RVOL {res.metrics.get('rvol')}, RSI {res.metrics.get('rsi_5m')}, "
+                f"${sized.margin_usd:.0f} margin → TP ${sized.reward_usd:.2f} / SL ${sized.risk_usd:.2f}"
             )
             try:
                 row = await ex.place_limit_order(
@@ -1658,7 +1676,7 @@ def main():
             add_event(
                 f"🎯 Mechanical {res.side.upper()} {asset}: post-only @ {row.get('px', entry_px)} × {sized.coin_qty:.6g} "
                 f"(${sized.notional_usd:.0f} notional, ${sized.margin_usd:.2f} margin @ {leverage}x isolated) — "
-                f"stop {res.stop_price:.6g} / target {res.target_price:.6g} = ±${sized.risk_usd:.2f}; "
+                f"SL {res.stop_price:.6g} (−${sized.risk_usd:.2f}) / TP {res.target_price:.6g} (+${sized.reward_usd:.2f}); "
                 f"cancel in {ttl_s // 60}m if unfilled. {rationale}"
             )
             _mech_diary({
@@ -1695,6 +1713,9 @@ def main():
             "mode": "mechanical" if mech.is_mechanical_mode(settings) else "ai",
             "network": network,
             "network_label": label,
+            "margin_usd": abs(_safe_float(settings.get("margin_per_position"), cfg.get("mech_margin_usd") or 30.0)),
+            "take_profit_usd": abs(_safe_float(settings.get("take_profit_usd"), cfg.get("mech_take_profit_usd") or 2.0)),
+            "stop_loss_usd": abs(_safe_float(settings.get("stop_loss_usd"), cfg.get("mech_stop_loss_usd") or 2.0)),
             "risk_usd": abs(_safe_float(settings.get("risk_per_trade_usd"), 2.0)),
             "leverage": int(cfg["mech_leverage"]),
             "cycle_seconds": int(cfg["mech_cycle_seconds"]),

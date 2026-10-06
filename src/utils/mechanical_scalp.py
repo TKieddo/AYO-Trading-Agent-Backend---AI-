@@ -34,32 +34,36 @@ MECHANICAL_MODE = "mechanical"
 # Defaults for every knob, overridable from trading_settings (DB) or CONFIG.
 DEFAULTS: Dict[str, Any] = {
     "mech_cycle_seconds": 60,
-    "mech_max_positions": 1,
+    "mech_max_positions": 3,
     "mech_leverage": 10,
-    "mech_adx_min": 20.0,
-    "mech_ema_min_separation_pct": 0.05,
-    "mech_atr_min_pct": 0.5,
-    "mech_atr_max_pct": 1.5,
-    "mech_rsi_max_long": 70.0,
-    "mech_rsi_min_short": 30.0,
-    "mech_rvol_full": 1.2,
-    "mech_rvol_half": 0.8,
-    "mech_funding_max": 0.0005,
-    "mech_oi_rising_pct": 1.0,
+    "mech_margin_usd": 30.0,
+    "mech_take_profit_usd": 2.0,
+    "mech_stop_loss_usd": 2.0,
+    # Looser regime so demo can take several quality setups/day (not 0).
+    "mech_adx_min": 15.0,
+    "mech_ema_min_separation_pct": 0.02,
+    "mech_atr_min_pct": 0.35,
+    "mech_atr_max_pct": 2.5,
+    "mech_rsi_max_long": 75.0,
+    "mech_rsi_min_short": 25.0,
+    "mech_rvol_full": 0.9,
+    "mech_rvol_half": 0.5,
+    "mech_funding_max": 0.001,
+    "mech_oi_rising_pct": 2.0,
     "mech_oi_window_minutes": 30,
-    "mech_session_start_utc": 6,
+    "mech_session_start_utc": 0,
     "mech_session_end_utc": 24,
-    "mech_trade_weekends": False,
+    "mech_trade_weekends": True,
     "mech_stop_buffer_pct": 0.05,
-    "mech_min_stop_pct": 0.15,
-    "mech_max_stop_pct": 1.5,
-    "mech_max_spread_frac_of_stop": 0.25,
+    "mech_min_stop_pct": 0.10,
+    "mech_max_stop_pct": 2.5,
+    "mech_max_spread_frac_of_stop": 0.40,
     "mech_entry_ttl_candles": 2,
-    "mech_pullback_lookback": 3,
-    "mech_win_cooldown_minutes": 5,
-    "mech_loss_cooldown_minutes": 30,
-    "mech_pair_refresh_minutes": 15,
-    "mech_min_size_risk_tolerance": 1.15,
+    "mech_pullback_lookback": 5,
+    "mech_win_cooldown_minutes": 2,
+    "mech_loss_cooldown_minutes": 12,
+    "mech_pair_refresh_minutes": 10,
+    "mech_min_size_risk_tolerance": 1.25,
 }
 
 
@@ -97,26 +101,56 @@ def resolve_config(settings: Optional[Dict[str, Any]], config: Optional[Dict[str
 
 
 def apply_mechanical_overrides(settings: Dict[str, Any]) -> Dict[str, Any]:
-    """Force the $-risk 1:1 book onto the shared settings dict when the mode is mechanical.
+    """Force the $30-margin / $2 TP book when the mode is mechanical.
 
-    The exit watcher, re-entry guard and risk governor all read these keys, so setting
-    them here keeps every downstream check consistent without touching those modules.
+    Position size = margin × leverage. Exits are fixed USD TP/SL (exchange algos +
+    exit watcher). Entry signals still come from the 5m pullback rules.
     """
     if not is_mechanical_mode(settings):
         return settings
     cfg = resolve_config(settings)
     try:
-        risk = abs(float(settings.get("risk_per_trade_usd") or 2.0))
+        margin = abs(float(
+            settings.get("margin_per_position")
+            or settings.get("mech_margin_usd")
+            or cfg.get("mech_margin_usd")
+            or 30.0
+        ))
     except (TypeError, ValueError):
-        risk = 2.0
-    if risk <= 0:
-        risk = 2.0
-    settings["risk_per_trade_usd"] = risk
-    settings["stop_loss_usd"] = -risk
+        margin = 30.0
+    if margin <= 0:
+        margin = 30.0
+    try:
+        tp = abs(float(
+            settings.get("take_profit_usd")
+            or settings.get("mech_take_profit_usd")
+            or cfg.get("mech_take_profit_usd")
+            or 2.0
+        ))
+    except (TypeError, ValueError):
+        tp = 2.0
+    if tp <= 0:
+        tp = 2.0
+    try:
+        sl = abs(float(
+            settings.get("stop_loss_usd")
+            or settings.get("mech_stop_loss_usd")
+            or cfg.get("mech_stop_loss_usd")
+            or tp
+        ))
+    except (TypeError, ValueError):
+        sl = tp
+    if sl <= 0:
+        sl = tp
+
+    settings["margin_per_position"] = margin
+    settings["position_sizing_mode"] = "margin"
     settings["tp_mode"] = "usd"
-    settings["take_profit_usd"] = risk
-    settings["position_sizing_mode"] = "risk"
-    settings["agent_manage_exits"] = False
+    settings["take_profit_usd"] = tp
+    settings["stop_loss_usd"] = -sl
+    # Keep risk_per_trade_usd aligned to SL for governors / diary.
+    settings["risk_per_trade_usd"] = sl
+    settings["agent_manage_exits"] = True
     settings["enable_profit_ladder"] = False
     settings["enable_breakeven_stop"] = False
     settings["enable_trailing_stop"] = False
@@ -127,8 +161,9 @@ def apply_mechanical_overrides(settings: Dict[str, Any]) -> Dict[str, Any]:
     settings["max_positions"] = int(cfg["mech_max_positions"])
     settings["leverage"] = int(cfg["mech_leverage"])
     settings["asset_leverage_overrides"] = {}
-    # ROI-based stop must not fire before the $ stop on a small-margin scalp.
+    # ROI-% exits must not preempt the $2 TP/SL on a $30 margin book.
     settings["stop_loss_percent"] = 1000.0
+    settings["take_profit_percent"] = 1000.0
     settings["interval"] = "5m"
     return settings
 
@@ -549,17 +584,15 @@ def size_position(
     bid: Optional[float],
     ask: Optional[float],
     cfg: Dict[str, Any],
+    margin_usd: Optional[float] = None,
+    take_profit_usd: Optional[float] = None,
+    stop_loss_usd: Optional[float] = None,
 ) -> SizedOrder | ScalpSkip:
-    """Contracts so the wick stop loses ``risk_usd`` (scaled by size_factor), or a skip."""
-    risk_target = max(float(risk_usd), 0.0) * float(signal.size_factor or 1.0)
-    dist = abs(signal.entry_price - signal.stop_price)
-    if risk_target <= 0 or dist <= 0:
-        return ScalpSkip(signal.asset, "zero risk budget or stop distance")
-
+    """Size by fixed margin (preferred) or legacy wick-risk. Always book fixed $ TP/SL when set."""
     if bid and ask and bid > 0 and ask > 0:
         spread_pct = (ask - bid) / signal.entry_price * 100.0
         max_frac = float(cfg["mech_max_spread_frac_of_stop"])
-        if spread_pct > signal.stop_distance_pct * max_frac:
+        if signal.stop_distance_pct > 0 and spread_pct > signal.stop_distance_pct * max_frac:
             return ScalpSkip(
                 signal.asset,
                 f"spread {spread_pct:.3f}% is more than {max_frac:.0%} of the {signal.stop_distance_pct:.2f}% stop",
@@ -568,6 +601,56 @@ def size_position(
     ct_val = float(ct_val or 1.0) or 1.0
     lot_sz = float(lot_sz or 1.0) or 1.0
     min_sz = float(min_sz or lot_sz) or lot_sz
+    lev = max(int(leverage or 1), 1)
+    entry = float(signal.entry_price)
+    if entry <= 0:
+        return ScalpSkip(signal.asset, "invalid entry price")
+
+    factor = float(signal.size_factor or 1.0)
+    use_margin = margin_usd is not None and float(margin_usd) > 0
+    if use_margin:
+        margin_target = max(float(margin_usd), 0.0) * factor
+        if margin_target <= 0:
+            return ScalpSkip(signal.asset, "zero margin budget")
+        notional = margin_target * lev
+        coin_qty = notional / entry
+        contracts = math.floor((coin_qty / ct_val) / lot_sz) * lot_sz
+        if contracts < min_sz:
+            contracts = min_sz
+        coin_qty = contracts * ct_val
+        notional = coin_qty * entry
+        margin = notional / lev
+        tp = abs(float(take_profit_usd if take_profit_usd is not None else cfg.get("mech_take_profit_usd") or 2.0))
+        sl = abs(float(stop_loss_usd if stop_loss_usd is not None else cfg.get("mech_stop_loss_usd") or tp))
+        if coin_qty <= 0:
+            return ScalpSkip(signal.asset, "zero sized quantity")
+        # Rewrite stop/target to fixed USD distances so exchange TP hits ~$2 every fill.
+        dist_tp = tp / coin_qty
+        dist_sl = sl / coin_qty
+        if signal.side == "buy":
+            signal.stop_price = entry - dist_sl
+            signal.target_price = entry + dist_tp
+        else:
+            signal.stop_price = entry + dist_sl
+            signal.target_price = entry - dist_tp
+        signal.stop_distance_pct = dist_sl / entry * 100.0
+        if margin > max(float(available_balance or 0.0), 0.0) * 0.9:
+            return ScalpSkip(signal.asset, f"margin ${margin:.2f} exceeds 90% of available ${available_balance:.2f}")
+        return SizedOrder(
+            contracts=contracts,
+            coin_qty=coin_qty,
+            notional_usd=notional,
+            margin_usd=margin,
+            risk_usd=sl,
+            reward_usd=tp,
+        )
+
+    # Legacy: contracts so the wick stop loses ``risk_usd``.
+    risk_target = max(float(risk_usd), 0.0) * factor
+    dist = abs(signal.entry_price - signal.stop_price)
+    if risk_target <= 0 or dist <= 0:
+        return ScalpSkip(signal.asset, "zero risk budget or stop distance")
+
     coin_qty = risk_target / dist
     contracts = math.floor((coin_qty / ct_val) / lot_sz) * lot_sz
     if contracts < min_sz:
@@ -581,7 +664,6 @@ def size_position(
             f"exchange minimum size would risk ${actual_risk:.2f} (> ${risk_target:.2f}); coin too violent for this book",
         )
     notional = coin_qty * signal.entry_price
-    lev = max(int(leverage or 1), 1)
     margin = notional / lev
     if margin > max(float(available_balance or 0.0), 0.0) * 0.9:
         return ScalpSkip(signal.asset, f"margin ${margin:.2f} exceeds 90% of available ${available_balance:.2f}")
@@ -591,7 +673,7 @@ def size_position(
         notional_usd=notional,
         margin_usd=margin,
         risk_usd=actual_risk,
-        reward_usd=actual_risk,  # 1:1 by construction
+        reward_usd=actual_risk,
     )
 
 
