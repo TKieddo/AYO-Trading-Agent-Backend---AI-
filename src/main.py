@@ -1377,7 +1377,9 @@ def main():
             except Exception:
                 pass
 
-    async def _mech_on_fill(pending: dict, order: dict, trading_settings: dict, cfg: dict) -> None:
+    async def _mech_on_fill(
+        pending: dict, order: dict, trading_settings: dict, cfg: dict, *, repair: bool = False
+    ) -> None:
         """Entry filled: protect it with exchange-side TP/SL, register the trade, notify."""
         ex = hyperliquid
         asset = pending["asset"]
@@ -1396,18 +1398,39 @@ def main():
             add_event(f"⚠️  Mechanical {asset}: fill reported but no position found; nothing to protect")
             return
         avg_px = float((order or {}).get("avg_price") or pending.get("px") or 0) or float(pending.get("px") or 0)
+        # Prefer live exchange size/entry — never trust wick distances for $ TP/SL.
+        try:
+            st = await ex.get_user_state()
+            for p in st.get("positions", []):
+                if str(p.get("symbol") or p.get("coin") or "").upper() != asset:
+                    continue
+                live_qty = abs(_safe_float(p.get("quantity") or p.get("szi"), 0))
+                live_entry = _safe_float(p.get("entry_price") or p.get("entryPx"), 0)
+                if live_qty > 0:
+                    filled_coins = live_qty
+                if live_entry > 0:
+                    avg_px = live_entry
+                break
+        except Exception:
+            pass
         tp_usd = abs(float(trading_settings.get("take_profit_usd") or cfg.get("mech_take_profit_usd") or 2.0))
         sl_usd = abs(float(trading_settings.get("stop_loss_usd") or cfg.get("mech_stop_loss_usd") or tp_usd))
-        # Pin TP/SL to fill price so the $2 target is exact after slippage.
-        if filled_coins > 0 and avg_px > 0:
-            dist_tp = tp_usd / filled_coins
-            dist_sl = sl_usd / filled_coins
-            stop_px = (avg_px - dist_sl) if is_long else (avg_px + dist_sl)
-            target_px = (avg_px + dist_tp) if is_long else (avg_px - dist_tp)
-        else:
-            stop_px = float(pending["stop"])
-            target_px = float(pending.get("target") or pending["stop"])
+        if filled_coins <= 0 or avg_px <= 0:
+            add_event(f"⚠️  Mechanical {asset}: cannot pin ${tp_usd:.2f} TP/SL (qty={filled_coins}, px={avg_px})")
+            return
+        # Fixed-USD book: price distance = $ / coin_qty (OKX PnL ≈ coins × Δprice).
+        dist_tp = tp_usd / filled_coins
+        dist_sl = sl_usd / filled_coins
+        stop_px = (avg_px - dist_sl) if is_long else (avg_px + dist_sl)
+        target_px = (avg_px + dist_tp) if is_long else (avg_px - dist_tp)
+        # Prove the math in logs so OKX "est. PnL" mismatches are obvious.
+        expect_tp = filled_coins * abs(target_px - avg_px)
+        expect_sl = filled_coins * abs(stop_px - avg_px)
         td_mode = pending.get("td_mode") or "isolated"
+        try:
+            await ex.cancel_all_orders(asset)
+        except Exception:
+            pass
         sl_oid = tp_oid = None
         try:
             sl_row = await ex.place_stop_loss(asset, is_long, filled_coins, stop_px, td_mode=td_mode)
@@ -1421,7 +1444,15 @@ def main():
                 add_event(f"⚠️  Mechanical {asset}: TP place returned no oid — exit watcher will still close at +${tp_usd:.2f}")
         except Exception as e:
             add_event(f"⚠️  Mechanical {asset}: could not place exchange TP at {target_px}: {e} — exit watcher will close at +${tp_usd:.2f}")
-        opened_at = datetime.now(timezone.utc).isoformat()
+        add_event(
+            f"📌 Mechanical {asset} USD exits pinned: qty={filled_coins:.6g} @ {avg_px:.6g} → "
+            f"TP {target_px:.6g} (≈${expect_tp:.2f}) / SL {stop_px:.6g} (≈${expect_sl:.2f})"
+        )
+        opened_at = (
+            (_MECH_STATE["open_trades"].get(asset) or {}).get("opened_at")
+            if repair
+            else datetime.now(timezone.utc).isoformat()
+        ) or datetime.now(timezone.utc).isoformat()
         trade_record = {
             "asset": asset,
             "is_long": is_long,
@@ -1432,43 +1463,55 @@ def main():
             "exit_plan": f"mechanical ${tp_usd:.2f} TP / ${sl_usd:.2f} SL on ${float(trading_settings.get('margin_per_position') or 30):.0f} margin",
             "opened_at": opened_at,
             "mode": "mechanical",
+            "usd_exits_pinned": True,
+            "tp_usd": tp_usd,
+            "sl_usd": sl_usd,
         }
-        active_trades.append(trade_record)
+        if not repair:
+            active_trades.append(trade_record)
+            _MECH_STATS.record_filled()
+            add_event(
+                f"✅ Mechanical {'LONG' if is_long else 'SHORT'} {asset} filled @ {avg_px:.6g} × {filled_coins:.6g} — "
+                f"SL {stop_px:.6g} (−${sl_usd:.2f}) / TP {target_px:.6g} (+${tp_usd:.2f})"
+            )
+            _mech_diary({
+                "asset": asset,
+                "action": "buy" if is_long else "sell",
+                "allocation_usd": round(filled_coins * avg_px / max(int(cfg["mech_leverage"]), 1), 2),
+                "amount": filled_coins,
+                "entry_price": avg_px,
+                "tp_price": target_px,
+                "tp_oid": tp_oid,
+                "sl_price": stop_px,
+                "sl_oid": sl_oid,
+                "exit_plan": f"+${tp_usd:.2f} TP / −${sl_usd:.2f} SL, exchange algo + exit watcher",
+                "rationale": pending.get("rationale", "mechanical pullback"),
+                "reasoning": json.dumps(pending.get("metrics") or {}, default=json_default),
+                "order_result": str(order.get("raw") if order else pending.get("ord_id")),
+                "opened_at": opened_at,
+                "filled": True,
+            })
+            try:
+                await webhook_notifier.notify_entry(
+                    asset=asset,
+                    side="LONG" if is_long else "SHORT",
+                    price=avg_px,
+                    size=filled_coins,
+                    leverage=int(cfg["mech_leverage"]),
+                    reason=pending.get("rationale", "mechanical pullback"),
+                )
+            except Exception as e:
+                logging.debug(f"Webhook entry notification failed: {e}")
+        else:
+            # Keep existing active_trades row in sync without double-counting fills.
+            for tr in active_trades:
+                if tr.get("asset") == asset:
+                    tr.update(trade_record)
+                    break
+            else:
+                active_trades.append(trade_record)
         _MECH_STATE["open_trades"][asset] = dict(trade_record)
         _MECH_STATE["managed_assets"].add(asset)
-        _MECH_STATS.record_filled()
-        add_event(
-            f"✅ Mechanical {'LONG' if is_long else 'SHORT'} {asset} filled @ {avg_px:.6g} × {filled_coins:.6g} — "
-            f"SL {stop_px:.6g} (−${sl_usd:.2f}) / TP {target_px:.6g} (+${tp_usd:.2f})"
-        )
-        _mech_diary({
-            "asset": asset,
-            "action": "buy" if is_long else "sell",
-            "allocation_usd": round(filled_coins * avg_px / max(int(cfg["mech_leverage"]), 1), 2),
-            "amount": filled_coins,
-            "entry_price": avg_px,
-            "tp_price": target_px,
-            "tp_oid": tp_oid,
-            "sl_price": stop_px,
-            "sl_oid": sl_oid,
-            "exit_plan": f"+${tp_usd:.2f} TP / −${sl_usd:.2f} SL, exchange algo + exit watcher",
-            "rationale": pending.get("rationale", "mechanical pullback"),
-            "reasoning": json.dumps(pending.get("metrics") or {}, default=json_default),
-            "order_result": str(order.get("raw") if order else pending.get("ord_id")),
-            "opened_at": opened_at,
-            "filled": True,
-        })
-        try:
-            await webhook_notifier.notify_entry(
-                asset=asset,
-                side="LONG" if is_long else "SHORT",
-                price=avg_px,
-                size=filled_coins,
-                leverage=int(cfg["mech_leverage"]),
-                reason=pending.get("rationale", "mechanical pullback"),
-            )
-        except Exception as e:
-            logging.debug(f"Webhook entry notification failed: {e}")
 
     async def _mechanical_cycle(trading_settings: dict, state: dict, positions: list, candidate_assets: list) -> None:
         """One pass: book exchange-side closes, manage the resting entry, then seek one new setup."""
@@ -1493,6 +1536,38 @@ def main():
             if abs(_safe_float(p.get("quantity"), 0)) > 0
         }
         await _mech_reconcile_closed(open_assets)
+
+        # Repair open legs that still have wick-distance TP/SL (~$3–4 on a $30 book).
+        for pos in positions:
+            asset = str(pos.get("symbol") or pos.get("coin") or "").upper()
+            qty = abs(_safe_float(pos.get("quantity") or pos.get("szi"), 0))
+            if not asset or qty <= 0:
+                continue
+            rec = _MECH_STATE["open_trades"].get(asset) or {}
+            if rec.get("usd_exits_pinned") and abs(float(rec.get("tp_usd") or 0) - tp_usd) < 1e-9:
+                continue
+            entry = _safe_float(pos.get("entry_price") or pos.get("entryPx"), 0)
+            signed = _safe_float(pos.get("quantity") or pos.get("szi"), 0)
+            is_long = signed > 0
+            if entry <= 0:
+                continue
+            fake_pending = {
+                "asset": asset,
+                "side": "buy" if is_long else "sell",
+                "px": entry,
+                "stop": entry,
+                "td_mode": td_mode,
+                "rationale": "repair usd exits",
+                "metrics": {},
+            }
+            add_event(f"🔧 Mechanical {asset}: re-pinning TP/SL to ±${tp_usd:.2f} (was not USD-pinned)")
+            await _mech_on_fill(
+                fake_pending,
+                {"filled_coins": qty, "avg_price": entry},
+                trading_settings,
+                cfg,
+                repair=True,
+            )
 
         # 1. Resting entry: filled → protect; expired → cancel (booking any partial fill).
         pending = _MECH_STATE.get("pending")

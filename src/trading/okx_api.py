@@ -284,12 +284,12 @@ class OKXAPI:
         """Convert coin quantity to OKX contract size string."""
         inst_id = self._to_inst_id(asset)
         info = self._get_instrument(inst_id)
-        ct_val = float(info.get("ctVal") or 1)
+        ct_val = float(info.get("ctVal") or 1) or 1.0
+        ct_mult = float(info.get("ctMult") or 1) or 1.0
+        ct_eff = ct_val * ct_mult
         lot_sz = float(info.get("lotSz") or 1)
         min_sz = float(info.get("minSz") or lot_sz)
-        if ct_val <= 0:
-            ct_val = 1.0
-        contracts = abs(float(coin_qty or 0)) / ct_val
+        contracts = abs(float(coin_qty or 0)) / ct_eff
         # Round down to lot size
         if lot_sz > 0:
             contracts = (contracts // lot_sz) * lot_sz
@@ -320,10 +320,19 @@ class OKXAPI:
 
     # --------------------------------------------------------------- trading
     def get_instrument_specs(self, asset: str) -> Dict[str, float]:
-        """Contract value, lot size, min size and tick size for sizing/rounding."""
+        """Contract value, lot size, min size and tick size for sizing/rounding.
+
+        OKX linear PnL ≈ contracts × ctVal × ctMult × price_diff. We expose
+        ``ct_val`` as the effective coin-per-contract (ctVal×ctMult) so sizing
+        and $ TP/SL distances stay accurate (e.g. NEAR ctVal=10).
+        """
         info = self._get_instrument(self._to_inst_id(asset))
+        ct_val = float(info.get("ctVal") or 1) or 1.0
+        ct_mult = float(info.get("ctMult") or 1) or 1.0
         return {
-            "ct_val": float(info.get("ctVal") or 1),
+            "ct_val": ct_val * ct_mult,
+            "ct_val_raw": ct_val,
+            "ct_mult": ct_mult,
             "lot_sz": float(info.get("lotSz") or 1),
             "min_sz": float(info.get("minSz") or info.get("lotSz") or 1),
             "tick_sz": float(info.get("tickSz") or 0) or 0.0,
@@ -532,12 +541,12 @@ class OKXAPI:
             if not isinstance(row, dict):
                 return {}
             info = self._get_instrument(inst_id)
-            ct_val = float(info.get("ctVal") or 1)
+            ct_eff = (float(info.get("ctVal") or 1) or 1.0) * (float(info.get("ctMult") or 1) or 1.0)
             filled_ct = float(row.get("accFillSz") or 0)
             return {
                 "state": str(row.get("state") or "").lower(),
                 "filled_contracts": filled_ct,
-                "filled_coins": filled_ct * ct_val,
+                "filled_coins": filled_ct * ct_eff,
                 "avg_price": float(row.get("avgPx") or 0) or None,
                 "price": float(row.get("px") or 0) or None,
                 "side": row.get("side"),
@@ -664,9 +673,9 @@ class OKXAPI:
                 inst_id = pos.get("instId") or ""
                 asset = self._from_inst_id(inst_id)
                 info = self._get_instrument(inst_id)
-                ct_val = float(info.get("ctVal") or 1)
-                # Convert contracts → coin qty
-                coin_qty = abs(pos_sz) * ct_val
+                ct_eff = (float(info.get("ctVal") or 1) or 1.0) * (float(info.get("ctMult") or 1) or 1.0)
+                # Convert contracts → coin qty (ctVal × ctMult)
+                coin_qty = abs(pos_sz) * ct_eff
                 side = (pos.get("posSide") or "").lower()
                 if side == "short" or (side in ("", "net") and pos_sz < 0):
                     signed = -coin_qty
@@ -928,10 +937,8 @@ class OKXAPI:
 
     async def round_size(self, asset: str, amount: float) -> float:
         try:
-            inst_id = self._to_inst_id(asset)
-            info = self._get_instrument(inst_id)
-            ct_val = float(info.get("ctVal") or 1)
+            specs = self.get_instrument_specs(asset)
             contracts = float(self._contracts_from_coins(asset, amount))
-            return contracts * ct_val
+            return contracts * float(specs["ct_val"])
         except Exception:
             return abs(float(amount or 0))
