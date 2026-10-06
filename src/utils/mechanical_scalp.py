@@ -34,7 +34,7 @@ MECHANICAL_MODE = "mechanical"
 # Defaults for every knob, overridable from trading_settings (DB) or CONFIG.
 DEFAULTS: Dict[str, Any] = {
     "mech_cycle_seconds": 60,
-    "mech_max_positions": 3,
+    "mech_max_positions": 5,
     "mech_leverage": 10,
     "mech_margin_usd": 30.0,
     "mech_take_profit_usd": 2.0,
