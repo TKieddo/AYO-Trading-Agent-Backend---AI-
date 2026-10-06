@@ -1983,10 +1983,16 @@ def main():
                     run_loop._pair_hunter_counter >= pair_hunter_refresh_interval
                     or len(run_loop._last_hunted_assets) == 0
                 )
-                # Mechanical cycles run every ~60s; rescan the market on a clock, not per cycle.
-                if should_refresh and run_loop._last_hunted_assets and mech.is_mechanical_mode(_LIVE_SETTINGS):
+                # Rescan on a clock (default 15m), not every ~60s mechanical cycle.
+                # Do not gate this on is_mechanical_mode(_LIVE_SETTINGS): settings are
+                # loaded later in the loop, so that check was skipping the throttle.
+                if should_refresh and run_loop._last_hunted_assets:
                     last_refresh = _MECH_STATE.get("last_pair_refresh_at")
-                    refresh_min = float(mech.resolve_config(_LIVE_SETTINGS, CONFIG)["mech_pair_refresh_minutes"])
+                    refresh_min = float(
+                        mech.resolve_config(_LIVE_SETTINGS, CONFIG).get(
+                            "mech_pair_refresh_minutes", 15
+                        )
+                    )
                     if last_refresh and (current_time - last_refresh).total_seconds() < refresh_min * 60:
                         should_refresh = False
                         run_loop._pair_hunter_counter = 0
@@ -2056,25 +2062,27 @@ def main():
                 if hunted_assets:
                     merged_assets = list(positions_assets) + [a for a in hunted_assets if a not in positions_assets]
                     decision_assets = merged_assets[:pair_hunter_max_analyze_assets]
-                    add_event(f"🏆 PAIR HUNTER: top setups ({len(hunted_assets)}): {', '.join(hunted_assets)}")
-                    scoreboard = []
-                    for sym in hunted_assets[:5]:
-                        s = pair_hunter_stats.get(sym, {})
-                        if s:
-                            scoreboard.append(
-                                f"{sym}(wr={float(s.get('win_rate', 0.0)):.0f}%, exp=${float(s.get('expectancy_usd', 0.0)):.2f}, n={int(s.get('total_trades', 0) or 0)})"
+                    # Log + Telegram only on an actual rescan (cached cycles stay quiet).
+                    if should_refresh:
+                        add_event(f"🏆 PAIR HUNTER: top setups ({len(hunted_assets)}): {', '.join(hunted_assets)}")
+                        scoreboard = []
+                        for sym in hunted_assets[:5]:
+                            s = pair_hunter_stats.get(sym, {})
+                            if s:
+                                scoreboard.append(
+                                    f"{sym}(wr={float(s.get('win_rate', 0.0)):.0f}%, exp=${float(s.get('expectancy_usd', 0.0)):.2f}, n={int(s.get('total_trades', 0) or 0)})"
+                                )
+                        if scoreboard:
+                            add_event(f"📈 Pair Hunter scorecard: {', '.join(scoreboard)}")
+                        if positions_assets:
+                            add_event(f"📊 Monitoring open-position assets: {', '.join(positions_assets)}")
+                        try:
+                            await webhook_notifier.notify_pair_hunter(
+                                top_pairs=hunted_assets,
+                                positions=list(positions_assets)
                             )
-                    if scoreboard:
-                        add_event(f"📈 Pair Hunter scorecard: {', '.join(scoreboard)}")
-                    if positions_assets:
-                        add_event(f"📊 Monitoring open-position assets: {', '.join(positions_assets)}")
-                    try:
-                        await webhook_notifier.notify_pair_hunter(
-                            top_pairs=hunted_assets,
-                            positions=list(positions_assets)
-                        )
-                    except Exception as e:
-                        logging.debug(f"Webhook pair hunter notification failed: {e}")
+                        except Exception as e:
+                            logging.debug(f"Webhook pair hunter notification failed: {e}")
                 else:
                     decision_assets = list(args.assets)
                     add_event("⚠️ Pair Hunter yielded no symbols, using ASSETS fallback.")

@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import html
 import logging
+import os
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -64,6 +66,13 @@ class WebhookNotifier:
         self.telegram_bot_token = telegram_bot_token
         self.telegram_chat_id = telegram_chat_id
         self.enabled_telegram = bool(telegram_bot_token and telegram_chat_id)
+        self._last_pair_hunter_notify_at = 0.0
+        try:
+            self._pair_hunter_notify_interval_sec = float(
+                os.getenv("PAIR_HUNTER_NOTIFY_INTERVAL_SEC", "900")
+            )
+        except (TypeError, ValueError):
+            self._pair_hunter_notify_interval_sec = 900.0
 
         if self.enabled_webhook:
             logger.info(f"🔔 Webhook notifier enabled: {webhook_url}")
@@ -389,7 +398,18 @@ class WebhookNotifier:
         )
 
     async def notify_pair_hunter(self, top_pairs: list, positions: list):
-        await self.send_notification(
+        """Notify on pair hunter refresh (throttled; default every 15 minutes)."""
+        now = time.time()
+        elapsed = now - float(self._last_pair_hunter_notify_at or 0)
+        if elapsed < self._pair_hunter_notify_interval_sec:
+            logger.debug(
+                "Pair hunter notify skipped (%.0fs < %.0fs throttle)",
+                elapsed,
+                self._pair_hunter_notify_interval_sec,
+            )
+            return False
+        self._last_pair_hunter_notify_at = now
+        return await self.send_notification(
             "PAIR_HUNTER",
             {
                 "top_pairs": top_pairs,
