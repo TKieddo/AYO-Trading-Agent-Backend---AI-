@@ -194,28 +194,98 @@ def _apply_env_bool_overrides(settings: Dict[str, Any]) -> Dict[str, Any]:
     return settings
 
 
+
+def _settings_api_candidates() -> list:
+    """Dashboard URLs to try for /api/trading/settings (never prefer agent self-URL first)."""
+    ordered = []
+    for key in ("DASHBOARD_URL", "NEXT_PUBLIC_BASE_URL", "NEXT_PUBLIC_API_URL"):
+        val = os.getenv(key) or CONFIG.get(key) or CONFIG.get(str(key).lower())
+        if not val:
+            continue
+        u = str(val).rstrip("/")
+        if u and u not in ordered:
+            ordered.append(u)
+    if "http://localhost:3001" not in ordered:
+        ordered.append("http://localhost:3001")
+    return ordered
+
+
+async def _fetch_trading_settings_row_from_supabase() -> Optional[Dict[str, Any]]:
+    """Read trading_settings directly when the dashboard API is unreachable."""
+    base = (os.getenv("SUPABASE_URL") or CONFIG.get("SUPABASE_URL") or "").rstrip("/")
+    key = (
+        os.getenv("SUPABASE_SERVICE_KEY")
+        or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+        or os.getenv("SUPABASE_KEY")
+        or CONFIG.get("SUPABASE_SERVICE_KEY")
+        or CONFIG.get("SUPABASE_KEY")
+    )
+    if not base or not key:
+        return None
+    url = f"{base}/rest/v1/trading_settings?id=eq.default&select=*"
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url,
+                headers={
+                    "apikey": str(key),
+                    "Authorization": f"Bearer {key}",
+                    "Accept": "application/json",
+                },
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status != 200:
+                    logging.warning(
+                        f"⚠️  Supabase trading_settings fetch failed (status {resp.status})"
+                    )
+                    return None
+                rows = await resp.json()
+                if isinstance(rows, list) and rows and isinstance(rows[0], dict):
+                    return rows[0]
+    except Exception as e:
+        logging.warning(f"⚠️  Supabase trading_settings fetch error: {e}")
+    return None
+
+
 async def get_trading_settings() -> Dict[str, Any]:
-    """Fetch trading settings from database API. ALWAYS uses database settings.
-    
+    """Fetch trading settings from dashboard API, then Supabase, then cache/env.
+
     Returns:
         Dictionary with all trading settings including leverage, TP%, SL%, assets, strategy, etc.
     """
-    # ALWAYS try to fetch from database API first (Next.js backend)
-    try:
-        # Get API URL from env or use default
-        api_url = os.getenv("NEXT_PUBLIC_API_URL") or os.getenv("NEXT_PUBLIC_BASE_URL") or os.getenv("DASHBOARD_URL") or CONFIG.get("NEXT_PUBLIC_API_URL") or CONFIG.get("next_public_base_url") or "http://localhost:3001"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{api_url}/api/trading/settings",
-                timeout=aiohttp.ClientTimeout(total=10)
-            ) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
+    data = None
+    source = None
+    # Prefer DASHBOARD_URL / Vercel base — NEXT_PUBLIC_API_URL on the agent often points at itself.
+    for api_url in _settings_api_candidates():
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{api_url}/api/trading/settings",
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        source = f"dashboard:{api_url}"
+                        break
+                    logging.warning(
+                        f"⚠️  Failed to fetch trading settings from {api_url} (status {resp.status})"
+                    )
+        except Exception as e:
+            logging.warning(f"⚠️  Could not fetch trading settings from {api_url}: {e}")
+
+    if data is None:
+        row = await _fetch_trading_settings_row_from_supabase()
+        if row is not None:
+            data = row
+            source = "supabase"
+
+    if data is not None:
+        try:
                     margin_per_pos = data.get("margin_per_position")
                     asset_leverage_overrides = data.get("asset_leverage_overrides", {}) or {}
                     asset_timeframes = data.get("asset_timeframes", {}) or {}
                     
-                    logging.info(f"✅ Fetched trading settings from database: leverage={data.get('leverage')}, strategy={data.get('strategy')}, exchange={data.get('exchange')}")
+                    logging.info(f"✅ Fetched trading settings via {source}: llm_model={data.get('llm_model')}, leverage={data.get('leverage')}, strategy={data.get('strategy')}, exchange={data.get('exchange')}")
 
                     settings = {
                         # Position sizing
@@ -353,10 +423,8 @@ async def get_trading_settings() -> Dict[str, Any]:
                         settings = align_take_profit_to_risk(settings, reward_multiple=2.0)
                     _save_cached_trading_settings(settings)
                     return _apply_env_bool_overrides(settings)
-                else:
-                    logging.warning(f"⚠️  Failed to fetch trading settings from database (status {resp.status}), using defaults")
-    except Exception as e:
-        logging.warning(f"⚠️  Could not fetch trading settings from database API: {e}. Using defaults. Make sure dashboard is running.")
+        except Exception as e:
+            logging.warning(f"⚠️  Failed to materialize trading settings from {source}: {e}")
 
     cached_settings = _load_cached_trading_settings()
     if cached_settings:
