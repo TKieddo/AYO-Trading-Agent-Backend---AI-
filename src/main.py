@@ -1158,11 +1158,14 @@ def main():
             targets = mech.resolve_exit_targets(settings, CONFIG)
             tp_mode = normalize_tp_mode(targets["mode"])
             tp_pct = float(targets["tp_pct"])
-            ui_sl = float(targets["sl_pct"]) if tp_mode == "roi_percent" else 1e9
-            # Catastrophic $ stop still armed from the resolved SL dollars.
+            # ROI and price-% modes honor user SL%; USD mode uses $ stop only.
+            if tp_mode in ("roi_percent", "price_percent"):
+                ui_sl = float(targets["sl_pct"])
+            else:
+                ui_sl = 1e9
             stop_usd = -abs(float(targets["sl_usd"]))
             try:
-                tp_usd_f = float(targets["tp_usd"])
+                tp_usd_f = float(targets["tp_usd"]) if tp_mode == "usd" else 0.0
             except (TypeError, ValueError):
                 tp_usd_f = 0.0
         else:
@@ -1428,9 +1431,13 @@ def main():
         if filled_coins <= 0 or avg_px <= 0:
             add_event(f"⚠️  Mechanical {asset}: cannot pin exits ({exit_label}; qty={filled_coins}, px={avg_px})")
             return
-        # Pin exchange algos using dollar distance (ROI% is converted to $ on margin).
-        dist_tp = tp_usd / filled_coins
-        dist_sl = sl_usd / filled_coins
+        # Pin exchange algos to the user's TP/SL (independent → any R:R).
+        if targets.get("price_based"):
+            dist_tp = avg_px * float(targets["tp_pct"]) / 100.0
+            dist_sl = avg_px * float(targets["sl_pct"]) / 100.0
+        else:
+            dist_tp = tp_usd / filled_coins
+            dist_sl = sl_usd / filled_coins
         stop_px = (avg_px - dist_sl) if is_long else (avg_px + dist_sl)
         target_px = (avg_px + dist_tp) if is_long else (avg_px - dist_tp)
         expect_tp = filled_coins * abs(target_px - avg_px)
@@ -1555,8 +1562,9 @@ def main():
                 continue
             rec = _MECH_STATE["open_trades"].get(asset) or {}
             same_tp = abs(float(rec.get("tp_usd") or 0) - tp_usd) < 1e-9
+            same_sl = abs(float(rec.get("sl_usd") or 0) - sl_usd) < 1e-9
             same_mode = str(rec.get("tp_mode") or "") == str(targets["mode"])
-            if rec.get("usd_exits_pinned") and same_tp and same_mode:
+            if rec.get("usd_exits_pinned") and same_tp and same_sl and same_mode:
                 continue
             entry = _safe_float(pos.get("entry_price") or pos.get("entryPx"), 0)
             signed = _safe_float(pos.get("quantity") or pos.get("szi"), 0)

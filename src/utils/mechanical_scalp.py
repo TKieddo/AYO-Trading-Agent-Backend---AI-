@@ -108,13 +108,14 @@ def resolve_exit_targets(
     settings: Optional[Dict[str, Any]],
     config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Resolve mechanical TP/SL as both margin-% and dollar amounts.
+    """Resolve user TP/SL independently (any R:R) for mechanical exits.
 
-    ``tp_mode``:
-      * ``roi_percent`` (default) — % of margin (5% of $30 = $1.50)
-      * ``usd`` — fixed dollars (e.g. $1)
-    Exchange algos are always pinned with the dollar amount; the exit watcher
-    uses the matching mode.
+    ``tp_mode`` (dashboard):
+      * ``roi_percent`` — % of margin (TP and SL set separately → 1:1, 1:2, …)
+      * ``price_percent`` — % of entry price (TP/SL independent)
+      * ``usd`` — fixed dollars (TP/SL independent)
+
+    Exchange algos are pinned to the resolved levels; exit watcher uses the same mode.
     """
     cfg = resolve_config(settings, config)
     settings = settings or {}
@@ -129,13 +130,18 @@ def resolve_exit_targets(
         margin = 30.0
     if margin <= 0:
         margin = 30.0
+    try:
+        lev = max(int(float(settings.get("leverage") or cfg.get("mech_leverage") or 10)), 1)
+    except (TypeError, ValueError):
+        lev = 10
 
     mode = str(
         settings.get("tp_mode") or cfg.get("mech_tp_mode") or "roi_percent"
     ).strip().lower()
-    if mode not in ("usd", "roi_percent"):
+    if mode not in ("usd", "roi_percent", "price_percent"):
         mode = "roi_percent"
 
+    price_based = False
     if mode == "usd":
         try:
             tp_usd = abs(float(
@@ -149,19 +155,18 @@ def resolve_exit_targets(
         if tp_usd <= 0:
             tp_usd = 1.0
         try:
-            sl_usd = abs(float(
-                settings.get("stop_loss_usd")
-                or settings.get("mech_stop_loss_usd")
-                or cfg.get("mech_stop_loss_usd")
-                or tp_usd
-            ))
+            raw_sl = settings.get("stop_loss_usd")
+            if raw_sl is None or raw_sl == "":
+                raw_sl = settings.get("mech_stop_loss_usd") or cfg.get("mech_stop_loss_usd") or tp_usd
+            sl_usd = abs(float(raw_sl))
         except (TypeError, ValueError):
             sl_usd = tp_usd
         if sl_usd <= 0:
             sl_usd = tp_usd
         tp_pct = (tp_usd / margin) * 100.0 if margin else 0.0
         sl_pct = (sl_usd / margin) * 100.0 if margin else 0.0
-        label = f"${tp_usd:.2f} TP / ${sl_usd:.2f} SL"
+        rr = (tp_usd / sl_usd) if sl_usd else 0.0
+        label = f"${tp_usd:.2f} TP / ${sl_usd:.2f} SL (R:R {rr:.2f})"
     else:
         try:
             tp_pct = abs(float(
@@ -188,26 +193,37 @@ def resolve_exit_targets(
         # Keep % inside numeric(5,2) column limits used by Supabase.
         tp_pct = min(tp_pct, 99.99)
         sl_pct = min(sl_pct, 99.99)
-        tp_usd = margin * tp_pct / 100.0
-        sl_usd = margin * sl_pct / 100.0
-        label = f"{tp_pct:g}% TP / {sl_pct:g}% SL (≈${tp_usd:.2f}/${sl_usd:.2f} on ${margin:.0f})"
+        if mode == "price_percent":
+            price_based = True
+            notional = margin * lev
+            tp_usd = notional * tp_pct / 100.0
+            sl_usd = notional * sl_pct / 100.0
+            rr = (tp_pct / sl_pct) if sl_pct else 0.0
+            label = f"{tp_pct:g}%/{sl_pct:g}% price TP/SL (R:R {rr:.2f}, ≈${tp_usd:.2f}/${sl_usd:.2f})"
+        else:
+            tp_usd = margin * tp_pct / 100.0
+            sl_usd = margin * sl_pct / 100.0
+            rr = (tp_pct / sl_pct) if sl_pct else 0.0
+            label = f"{tp_pct:g}%/{sl_pct:g}% margin ROI TP/SL (R:R {rr:.2f}, ≈${tp_usd:.2f}/${sl_usd:.2f} on ${margin:.0f})"
 
     return {
         "mode": mode,
         "margin_usd": margin,
+        "leverage": lev,
         "tp_usd": tp_usd,
         "sl_usd": sl_usd,
         "tp_pct": tp_pct,
         "sl_pct": sl_pct,
+        "price_based": price_based,
         "label": label,
     }
 
 
 def apply_mechanical_overrides(settings: Dict[str, Any]) -> Dict[str, Any]:
-    """Force the margin book when the mode is mechanical.
+    """Margin sizing + user TP/SL levels when the mode is mechanical.
 
-    Position size = margin × leverage. Exits follow the dashboard ``tp_mode``:
-    margin ROI-% (default 5%) or fixed USD. Entry signals stay on the 5m rules.
+    Does **not** force 1:1 — TP and SL stay whatever you set (%, price %, or $).
+    Trailing / ladder / BE are off so those levels stay respected.
     """
     if not is_mechanical_mode(settings):
         return settings
@@ -229,6 +245,8 @@ def apply_mechanical_overrides(settings: Dict[str, Any]) -> Dict[str, Any]:
     settings["take_profit_percent"] = tp_pct
     settings["stop_loss_percent"] = sl_pct
     settings["agent_manage_exits"] = True
+    settings["enable_stop_loss_orders"] = True
+    settings["take_profit_strict_enforcement"] = True
     settings["enable_profit_ladder"] = False
     settings["enable_breakeven_stop"] = False
     settings["enable_trailing_stop"] = False
