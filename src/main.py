@@ -5981,8 +5981,14 @@ def main():
             logging.error(traceback.format_exc())
             return web.json_response({"error": str(e)}, status=500)
 
+    async def handle_health(_request):
+        """Coolify / Docker health probes hit GET / — must return 200, not 404."""
+        return web.json_response({"ok": True, "service": "ayo-trading-agent"})
+
     async def start_api(app):
         """Register HTTP endpoints for observing diary entries, logs, positions, and status."""
+        app.router.add_get('/', handle_health)
+        app.router.add_get('/health', handle_health)
         app.router.add_get('/diary', handle_diary)
         app.router.add_get('/logs', handle_logs)
         app.router.add_get('/positions', handle_positions)

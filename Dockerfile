@@ -1,8 +1,8 @@
 FROM python:3.12-slim
 
-# System deps
+# System deps (wget required — Coolify Dockerfile healthchecks call wget on /)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential curl ca-certificates git && \
+    build-essential curl wget ca-certificates git && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -24,6 +24,10 @@ ENV APP_PORT=8080
 ENV API_PORT=8080
 ENV API_HOST=0.0.0.0
 EXPOSE 8080
+
+# Coolify / compose probes hit / — keep this path returning 200.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:8080/ >/dev/null || curl -fsS http://127.0.0.1:8080/ >/dev/null || exit 1
 
 # Default command: run as module to keep absolute imports working
 ENTRYPOINT ["poetry", "run", "python", "-m", "src.main"]
