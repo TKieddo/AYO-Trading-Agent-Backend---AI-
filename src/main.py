@@ -1155,13 +1155,21 @@ def main():
         stop_usd = -abs(max_loss)
         ui_sl = float(settings.get("stop_loss_percent") or CONFIG.get("stop_loss_percent") or 12)
         if mech.is_mechanical_mode(settings):
-            # The $ stop is the only stop on the 1:1 book; a margin-ROI stop would fire first
-            # on a small-margin scalp and turn a $2 plan into a $0.75 loss.
-            ui_sl = 1e9
-        try:
-            tp_usd_f = float(settings.get("take_profit_usd") or 0)
-        except (TypeError, ValueError):
-            tp_usd_f = 0.0
+            targets = mech.resolve_exit_targets(settings, CONFIG)
+            tp_mode = normalize_tp_mode(targets["mode"])
+            tp_pct = float(targets["tp_pct"])
+            ui_sl = float(targets["sl_pct"]) if tp_mode == "roi_percent" else 1e9
+            # Catastrophic $ stop still armed from the resolved SL dollars.
+            stop_usd = -abs(float(targets["sl_usd"]))
+            try:
+                tp_usd_f = float(targets["tp_usd"])
+            except (TypeError, ValueError):
+                tp_usd_f = 0.0
+        else:
+            try:
+                tp_usd_f = float(settings.get("take_profit_usd") or 0)
+            except (TypeError, ValueError):
+                tp_usd_f = 0.0
 
         for pos in st.get("positions") or []:
             asset = pos.get("symbol") or pos.get("coin")
@@ -1217,11 +1225,11 @@ def main():
             elif tp_mode == "price_percent" and price_move is not None and price_move >= tp_pct:
                 reason = f"Price TP {price_move:.2f}% >= {tp_pct:g}%"
                 diary = "close_tp"
-            elif tp_usd_f > 0 and upl >= tp_usd_f:
-                # Always honor take_profit_usd as a hard profit lock when set
+            elif tp_mode == "usd" and tp_usd_f > 0 and upl >= tp_usd_f:
                 reason = f"USD TP ${upl:.2f} >= ${tp_usd_f:g}"
                 diary = "close_tp"
-            elif tp_mode == "usd" and tp_usd_f > 0 and upl >= tp_usd_f:
+            elif tp_mode != "roi_percent" and tp_usd_f > 0 and upl >= tp_usd_f:
+                # Non-ROI modes may still honor an absolute $ lock when set.
                 reason = f"USD TP ${upl:.2f} >= ${tp_usd_f:g}"
                 diary = "close_tp"
 
@@ -1413,17 +1421,18 @@ def main():
                 break
         except Exception:
             pass
-        tp_usd = abs(float(trading_settings.get("take_profit_usd") or cfg.get("mech_take_profit_usd") or 2.0))
-        sl_usd = abs(float(trading_settings.get("stop_loss_usd") or cfg.get("mech_stop_loss_usd") or tp_usd))
+        targets = mech.resolve_exit_targets(trading_settings, cfg)
+        tp_usd = float(targets["tp_usd"])
+        sl_usd = float(targets["sl_usd"])
+        exit_label = str(targets["label"])
         if filled_coins <= 0 or avg_px <= 0:
-            add_event(f"⚠️  Mechanical {asset}: cannot pin ${tp_usd:.2f} TP/SL (qty={filled_coins}, px={avg_px})")
+            add_event(f"⚠️  Mechanical {asset}: cannot pin exits ({exit_label}; qty={filled_coins}, px={avg_px})")
             return
-        # Fixed-USD book: price distance = $ / coin_qty (OKX PnL ≈ coins × Δprice).
+        # Pin exchange algos using dollar distance (ROI% is converted to $ on margin).
         dist_tp = tp_usd / filled_coins
         dist_sl = sl_usd / filled_coins
         stop_px = (avg_px - dist_sl) if is_long else (avg_px + dist_sl)
         target_px = (avg_px + dist_tp) if is_long else (avg_px - dist_tp)
-        # Prove the math in logs so OKX "est. PnL" mismatches are obvious.
         expect_tp = filled_coins * abs(target_px - avg_px)
         expect_sl = filled_coins * abs(stop_px - avg_px)
         td_mode = pending.get("td_mode") or "isolated"
@@ -1441,11 +1450,11 @@ def main():
             tp_row = await ex.place_take_profit(asset, is_long, filled_coins, target_px, td_mode=td_mode)
             tp_oid = (ex.extract_oids(tp_row) or [None])[0]
             if not tp_oid:
-                add_event(f"⚠️  Mechanical {asset}: TP place returned no oid — exit watcher will still close at +${tp_usd:.2f}")
+                add_event(f"⚠️  Mechanical {asset}: TP place returned no oid — exit watcher still enforces {exit_label}")
         except Exception as e:
-            add_event(f"⚠️  Mechanical {asset}: could not place exchange TP at {target_px}: {e} — exit watcher will close at +${tp_usd:.2f}")
+            add_event(f"⚠️  Mechanical {asset}: could not place exchange TP at {target_px}: {e} — exit watcher still enforces {exit_label}")
         add_event(
-            f"📌 Mechanical {asset} USD exits pinned: qty={filled_coins:.6g} @ {avg_px:.6g} → "
+            f"📌 Mechanical {asset} exits pinned ({exit_label}): qty={filled_coins:.6g} @ {avg_px:.6g} → "
             f"TP {target_px:.6g} (≈${expect_tp:.2f}) / SL {stop_px:.6g} (≈${expect_sl:.2f})"
         )
         opened_at = (
@@ -1460,19 +1469,22 @@ def main():
             "entry_price": avg_px,
             "tp_oid": tp_oid,
             "sl_oid": sl_oid,
-            "exit_plan": f"mechanical ${tp_usd:.2f} TP / ${sl_usd:.2f} SL on ${float(trading_settings.get('margin_per_position') or 30):.0f} margin",
+            "exit_plan": f"mechanical {exit_label}",
             "opened_at": opened_at,
             "mode": "mechanical",
             "usd_exits_pinned": True,
             "tp_usd": tp_usd,
             "sl_usd": sl_usd,
+            "tp_mode": targets["mode"],
+            "tp_pct": targets["tp_pct"],
+            "sl_pct": targets["sl_pct"],
         }
         if not repair:
             active_trades.append(trade_record)
             _MECH_STATS.record_filled()
             add_event(
                 f"✅ Mechanical {'LONG' if is_long else 'SHORT'} {asset} filled @ {avg_px:.6g} × {filled_coins:.6g} — "
-                f"SL {stop_px:.6g} (−${sl_usd:.2f}) / TP {target_px:.6g} (+${tp_usd:.2f})"
+                f"SL {stop_px:.6g} / TP {target_px:.6g} ({exit_label})"
             )
             _mech_diary({
                 "asset": asset,
@@ -1484,7 +1496,7 @@ def main():
                 "tp_oid": tp_oid,
                 "sl_price": stop_px,
                 "sl_oid": sl_oid,
-                "exit_plan": f"+${tp_usd:.2f} TP / −${sl_usd:.2f} SL, exchange algo + exit watcher",
+                "exit_plan": f"{exit_label}, exchange algo + exit watcher",
                 "rationale": pending.get("rationale", "mechanical pullback"),
                 "reasoning": json.dumps(pending.get("metrics") or {}, default=json_default),
                 "order_result": str(order.get("raw") if order else pending.get("ord_id")),
@@ -1519,14 +1531,12 @@ def main():
         cfg = mech.resolve_config(trading_settings, CONFIG)
         now = datetime.now(timezone.utc)
         _MECH_STATE["last_cycle_at"] = now.isoformat()
-        risk_usd = abs(float(trading_settings.get("risk_per_trade_usd") or cfg.get("mech_stop_loss_usd") or 2.0))
-        margin_usd = abs(float(
-            trading_settings.get("margin_per_position")
-            or cfg.get("mech_margin_usd")
-            or 30.0
-        ))
-        tp_usd = abs(float(trading_settings.get("take_profit_usd") or cfg.get("mech_take_profit_usd") or 2.0))
-        sl_usd = abs(float(trading_settings.get("stop_loss_usd") or cfg.get("mech_stop_loss_usd") or tp_usd))
+        targets = mech.resolve_exit_targets(trading_settings, cfg)
+        risk_usd = float(targets["sl_usd"])
+        margin_usd = float(targets["margin_usd"])
+        tp_usd = float(targets["tp_usd"])
+        sl_usd = float(targets["sl_usd"])
+        exit_label = str(targets["label"])
         leverage = int(cfg["mech_leverage"])
         td_mode = "isolated"
 
@@ -1537,14 +1547,16 @@ def main():
         }
         await _mech_reconcile_closed(open_assets)
 
-        # Repair open legs that still have wick-distance TP/SL (~$3–4 on a $30 book).
+        # Repair open legs when exit targets change (e.g. $2 → 5% ROI).
         for pos in positions:
             asset = str(pos.get("symbol") or pos.get("coin") or "").upper()
             qty = abs(_safe_float(pos.get("quantity") or pos.get("szi"), 0))
             if not asset or qty <= 0:
                 continue
             rec = _MECH_STATE["open_trades"].get(asset) or {}
-            if rec.get("usd_exits_pinned") and abs(float(rec.get("tp_usd") or 0) - tp_usd) < 1e-9:
+            same_tp = abs(float(rec.get("tp_usd") or 0) - tp_usd) < 1e-9
+            same_mode = str(rec.get("tp_mode") or "") == str(targets["mode"])
+            if rec.get("usd_exits_pinned") and same_tp and same_mode:
                 continue
             entry = _safe_float(pos.get("entry_price") or pos.get("entryPx"), 0)
             signed = _safe_float(pos.get("quantity") or pos.get("szi"), 0)
@@ -1557,10 +1569,10 @@ def main():
                 "px": entry,
                 "stop": entry,
                 "td_mode": td_mode,
-                "rationale": "repair usd exits",
+                "rationale": "repair exits",
                 "metrics": {},
             }
-            add_event(f"🔧 Mechanical {asset}: re-pinning TP/SL to ±${tp_usd:.2f} (was not USD-pinned)")
+            add_event(f"🔧 Mechanical {asset}: re-pinning exits to {exit_label}")
             await _mech_on_fill(
                 fake_pending,
                 {"filled_coins": qty, "avg_price": entry},
@@ -1689,7 +1701,7 @@ def main():
             except Exception as e:
                 _mech_skip(asset, f"instrument specs unavailable: {e}", res.metrics)
                 continue
-            # Fixed $30 margin book: size by margin, then pin SL/TP to ±$2 USD.
+            # Margin book: size by margin, then pin SL/TP to resolved $ targets (from ROI% or USD).
             sized = mech.size_position(
                 res,
                 risk_usd=risk_usd,
@@ -2260,8 +2272,9 @@ def main():
                 if not getattr(run_loop, "_mech_announced", False):
                     network_now, label_now = _venue_network()
                     add_event(
-                        f"🤖 MECHANICAL MODE on {label_now}: AI parked. ±${abs(_safe_float(trading_settings.get('risk_per_trade_usd'), 2.0)):.2f} "
-                        f"1:1 book, {int(mech_cfg['mech_leverage'])}x isolated, cycle {int(mech_cfg['mech_cycle_seconds'])}s, "
+                        f"🤖 MECHANICAL MODE on {label_now}: AI parked. "
+                        f"{mech.resolve_exit_targets(trading_settings, mech_cfg)['label']}, "
+                        f"{int(mech_cfg['mech_leverage'])}x isolated, cycle {int(mech_cfg['mech_cycle_seconds'])}s, "
                         f"session {int(mech_cfg['mech_session_start_utc']):02d}–{int(mech_cfg['mech_session_end_utc']):02d} UTC weekdays"
                     )
                     run_loop._mech_announced = True
