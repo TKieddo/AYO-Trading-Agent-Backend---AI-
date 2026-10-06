@@ -44,21 +44,60 @@ interface TradingSettings {
   deepseek_max_tokens: number;
   next_public_base_url: string;
   stop_loss_usd: number | null;
+  take_profit_usd: number | null;
   risk_per_trade_usd: number | null;
   risk_per_trade_pct: number;
+  tp_mode: "price_percent" | "roi_percent" | "usd" | "atr_rr";
   take_profit_strict_enforcement: boolean;
   enable_stop_loss_orders: boolean;
+  // Mechanical scalp book (llm_model === "mechanical")
+  mech_leverage: number;
+  mech_cycle_seconds: number;
+  mech_session_start_utc: number;
+  mech_session_end_utc: number;
+  mech_trade_weekends: boolean;
+  mech_atr_min_pct: number;
+  mech_atr_max_pct: number;
+  mech_adx_min: number;
+  mech_entry_ttl_candles: number;
+  max_daily_loss_usd: number | null;
+  mech_max_positions: number;
+  enable_profit_ladder?: boolean;
+  enable_breakeven_stop?: boolean;
 }
+
+type DecisionEngine = "ai" | "mechanical";
+
+/** Values the toggle writes when the mechanical book is chosen: margin size + ROI% exits. */
+const MECHANICAL_BOOK = {
+  llm_model: "mechanical",
+  tp_mode: "roi_percent" as const,
+  position_sizing_mode: "margin" as const,
+  margin_per_position: 40,
+  max_positions: 3,
+  mech_max_positions: 3,
+  take_profit_percent: 5,
+  stop_loss_percent: 5,
+  risk_per_trade_usd: 2,
+  take_profit_usd: 2,
+  stop_loss_usd: -2,
+  leverage: 10,
+  mech_leverage: 10,
+  max_daily_loss_usd: 15,
+  asset_leverage_overrides: {} as Record<string, number>,
+  interval: "5m",
+  mech_trade_weekends: false,
+};
 
 export function TradingSettings() {
   const [settings, setSettings] = useState<TradingSettings>({
     leverage: 10,
-    take_profit_percent: 5.0,
+    take_profit_percent: 7.0,
     stop_loss_percent: 3.0,
     target_profit_per_1pct_move: 1.0,
     allocation_per_position: null,
-    margin_per_position: 30,
-    max_positions: 6,
+    margin_per_position: 40,
+    max_positions: 3,
     position_sizing_mode: "margin",
     active_strategy_ids: [],
     multi_exchange_mode: false,
@@ -87,10 +126,23 @@ export function TradingSettings() {
     deepseek_max_tokens: 20000,
     next_public_base_url: "http://localhost:3001",
     stop_loss_usd: -6,
+    take_profit_usd: 12,
     risk_per_trade_usd: 6,
     risk_per_trade_pct: 0.5,
+    tp_mode: "roi_percent",
     take_profit_strict_enforcement: false,
     enable_stop_loss_orders: true,
+    mech_leverage: 10,
+    mech_cycle_seconds: 60,
+    mech_session_start_utc: 6,
+    mech_session_end_utc: 24,
+    mech_trade_weekends: false,
+    mech_atr_min_pct: 0.5,
+    mech_atr_max_pct: 1.5,
+    mech_adx_min: 20,
+    mech_entry_ttl_candles: 2,
+    max_daily_loss_usd: 15,
+    mech_max_positions: 3,
   });
   const [strategies, setStrategies] = useState<any[]>([]);
   const [loadingStrategies, setLoadingStrategies] = useState(false);
@@ -125,12 +177,12 @@ export function TradingSettings() {
         const data = await response.json();
         setSettings({
           leverage: data.leverage || 10,
-          take_profit_percent: data.take_profit_percent || 5.0,
+          take_profit_percent: data.take_profit_percent || 40.0,
           stop_loss_percent: data.stop_loss_percent || 3.0,
           target_profit_per_1pct_move: data.target_profit_per_1pct_move ?? 1.0,
           allocation_per_position: data.allocation_per_position ?? null,
-          margin_per_position: data.margin_per_position ?? 30,
-          max_positions: data.max_positions ?? 6,
+          margin_per_position: data.margin_per_position ?? 40,
+          max_positions: data.max_positions ?? data.mech_max_positions ?? 3,
           position_sizing_mode: data.position_sizing_mode || "margin",
           active_strategy_ids: data.active_strategy_ids || [],
           multi_exchange_mode: data.multi_exchange_mode ?? false,
@@ -154,8 +206,10 @@ export function TradingSettings() {
           scalping_sl_percent: data.scalping_sl_percent ?? 5.0,
           auto_strategy_cache_minutes: data.auto_strategy_cache_minutes ?? 0,
           stop_loss_usd: data.stop_loss_usd ?? -6,
+          take_profit_usd: data.take_profit_usd ?? 12,
           risk_per_trade_usd: data.risk_per_trade_usd ?? 6,
           risk_per_trade_pct: data.risk_per_trade_pct ?? 0.5,
+          tp_mode: (data.tp_mode as TradingSettings["tp_mode"]) || "price_percent",
           take_profit_strict_enforcement: data.take_profit_strict_enforcement ?? false,
           enable_stop_loss_orders: data.enable_stop_loss_orders ?? true,
           asset_leverage_overrides: data.asset_leverage_overrides || {},
@@ -163,6 +217,17 @@ export function TradingSettings() {
           llm_model: data.llm_model || "deepseek-reasoner",
           deepseek_max_tokens: data.deepseek_max_tokens ?? 20000,
           next_public_base_url: data.next_public_base_url || "http://localhost:3001",
+          mech_leverage: data.mech_leverage ?? 10,
+          mech_cycle_seconds: data.mech_cycle_seconds ?? 60,
+          mech_session_start_utc: data.mech_session_start_utc ?? 6,
+          mech_session_end_utc: data.mech_session_end_utc ?? 24,
+          mech_trade_weekends: data.mech_trade_weekends ?? false,
+          mech_atr_min_pct: data.mech_atr_min_pct ?? 0.5,
+          mech_atr_max_pct: data.mech_atr_max_pct ?? 1.5,
+          mech_adx_min: data.mech_adx_min ?? 20,
+          mech_entry_ttl_candles: data.mech_entry_ttl_candles ?? 2,
+          max_daily_loss_usd: data.max_daily_loss_usd ?? 15,
+          mech_max_positions: data.mech_max_positions ?? data.max_positions ?? 3,
         });
       }
     } catch (error) {
@@ -172,15 +237,78 @@ export function TradingSettings() {
     }
   };
 
+  const engine: DecisionEngine = settings.llm_model === "mechanical" ? "mechanical" : "ai";
+
+  /** Flip the engine. Mechanical keeps your TP/SL mode and levels (any R:R). */
+  const setEngine = (next: DecisionEngine) => {
+    if (next === "mechanical") {
+      const margin =
+        settings.margin_per_position && settings.margin_per_position > 0
+          ? settings.margin_per_position
+          : MECHANICAL_BOOK.margin_per_position;
+      const mode =
+        settings.tp_mode === "usd" ||
+        settings.tp_mode === "roi_percent" ||
+        settings.tp_mode === "price_percent"
+          ? settings.tp_mode
+          : MECHANICAL_BOOK.tp_mode;
+      const tpPct =
+        settings.take_profit_percent && settings.take_profit_percent > 0
+          ? settings.take_profit_percent
+          : MECHANICAL_BOOK.take_profit_percent;
+      const slPct =
+        settings.stop_loss_percent && settings.stop_loss_percent > 0
+          ? settings.stop_loss_percent
+          : MECHANICAL_BOOK.stop_loss_percent;
+      const tpUsd =
+        mode === "usd" && settings.take_profit_usd && settings.take_profit_usd > 0
+          ? settings.take_profit_usd
+          : (margin * tpPct) / 100;
+      const slUsd =
+        mode === "usd" && settings.stop_loss_usd
+          ? Math.abs(settings.stop_loss_usd)
+          : (margin * slPct) / 100;
+      setSettings({
+        ...settings,
+        ...MECHANICAL_BOOK,
+        llm_model: "mechanical",
+        tp_mode: mode,
+        margin_per_position: margin,
+        take_profit_percent: tpPct,
+        stop_loss_percent: slPct,
+        take_profit_usd: tpUsd,
+        stop_loss_usd: -Math.abs(slUsd),
+        risk_per_trade_usd: Math.abs(slUsd),
+        leverage: settings.mech_leverage || MECHANICAL_BOOK.leverage,
+        take_profit_strict_enforcement: true,
+        enable_stop_loss_orders: true,
+        enable_trailing_stop: false,
+        enable_profit_ladder: false,
+        enable_breakeven_stop: false,
+      });
+      return;
+    }
+    setSettings({ ...settings, llm_model: "deepseek-reasoner" });
+  };
+
   const handleSave = async () => {
     setSaving(true);
     setMessage(null);
 
     try {
+      const maxPos = settings.mech_max_positions || settings.max_positions || 3;
+      const payload = {
+        ...settings,
+        max_positions: maxPos,
+        mech_max_positions: maxPos,
+        margin_per_position: settings.margin_per_position ?? 40,
+        max_daily_loss_usd: settings.max_daily_loss_usd ?? 15,
+        leverage: settings.llm_model === "mechanical" ? settings.mech_leverage || settings.leverage : settings.leverage,
+      };
       const response = await fetch("/api/trading/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(settings),
+        body: JSON.stringify(payload),
       });
 
       const data = await response.json();
@@ -224,6 +352,270 @@ export function TradingSettings() {
         </p>
       </CardHeader>
       <CardContent className="space-y-6">
+
+        {/* ENGINE FIRST */}
+        <div className="space-y-4">
+          <div className="pb-2 border-b-2 border-slate-300">
+            <h3 className="text-lg font-bold text-slate-800">1. Decision engine</h3>
+            <p className="text-xs text-slate-500 mt-1">
+              Choose who decides entries. Only controls for the active engine are shown below.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {(
+              [
+                {
+                  id: "ai" as DecisionEngine,
+                  title: "AI agent (DeepSeek)",
+                  body: "LLM cycle. Uses the AI risk / sizing panels below.",
+                },
+                {
+                  id: "mechanical" as DecisionEngine,
+                  title: "Mechanical day-trader",
+                  body: "Multi-setup: London/NY impulse, range MR, breakout+retest on liquid majors. No Pair Hunter.",
+                },
+              ] as const
+            ).map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                onClick={() => setEngine(opt.id)}
+                className={cn(
+                  "text-left rounded-lg border p-3 transition-colors focus:outline-none focus:ring-2 focus:ring-[#c0e156]",
+                  engine === opt.id
+                    ? "border-[#c0e156] bg-[#f6fbe4]"
+                    : "border-slate-300 bg-white hover:bg-slate-50"
+                )}
+                aria-pressed={engine === opt.id}
+              >
+                <div className="font-semibold text-slate-800">{opt.title}</div>
+                <div className="text-xs text-slate-500 mt-1">{opt.body}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {engine === "mechanical" ? (
+          <div className="pt-2 space-y-4">
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+              Universe is fixed in code (BTC/ETH for session impulse; liquid list for range/breakout).
+              SL is ATR-floored; TP/SL % or $ below still apply to impulse/range. Breakouts use 1.5R.
+              Max open margin ≈ ${(settings.margin_per_position || 40) * (settings.mech_max_positions || settings.max_positions || 3)}.
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label htmlFor="mech_margin">Margin per trade ($)</Label>
+                <Input
+                  id="mech_margin"
+                  type="number"
+                  min={5}
+                  step={1}
+                  value={settings.margin_per_position ?? 40}
+                  onChange={(e) => {
+                    const v = Math.max(5, parseFloat(e.target.value) || 40);
+                    const tpPct = settings.take_profit_percent || 5;
+                    const slPct = settings.stop_loss_percent || 5;
+                    setSettings({
+                      ...settings,
+                      margin_per_position: v,
+                      take_profit_usd: settings.tp_mode === "usd" ? settings.take_profit_usd : (v * tpPct) / 100,
+                      stop_loss_usd: settings.tp_mode === "usd" ? settings.stop_loss_usd : -Math.abs((v * slPct) / 100),
+                      risk_per_trade_usd: Math.abs(
+                        settings.tp_mode === "usd"
+                          ? Number(settings.stop_loss_usd || 0)
+                          : (v * slPct) / 100
+                      ),
+                    });
+                  }}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="mech_lev">Leverage (isolated)</Label>
+                <Input
+                  id="mech_lev"
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={settings.mech_leverage}
+                  onChange={(e) => {
+                    const v = Math.max(1, Math.min(20, parseInt(e.target.value) || 10));
+                    setSettings({ ...settings, mech_leverage: v, leverage: v });
+                  }}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="mech_max_pos">Max concurrent positions</Label>
+                <Input
+                  id="mech_max_pos"
+                  type="number"
+                  min={1}
+                  max={5}
+                  value={settings.mech_max_positions || settings.max_positions || 3}
+                  onChange={(e) => {
+                    const v = Math.max(1, Math.min(5, parseInt(e.target.value) || 3));
+                    setSettings({ ...settings, mech_max_positions: v, max_positions: v });
+                  }}
+                />
+                <p className="text-xs text-slate-500">Default 3. Raise to 4 in the UI anytime.</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="mech_daily_loss">Max daily loss ($)</Label>
+                <Input
+                  id="mech_daily_loss"
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={settings.max_daily_loss_usd ?? 15}
+                  onChange={(e) =>
+                    setSettings({ ...settings, max_daily_loss_usd: Math.max(1, parseFloat(e.target.value) || 15) })
+                  }
+                />
+                <p className="text-xs text-slate-500">Stops new entries for the UTC day after this loss.</p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="mech_tp_mode">TP / SL mode</Label>
+                <select
+                  id="mech_tp_mode"
+                  value={settings.tp_mode === "atr_rr" ? "roi_percent" : settings.tp_mode}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      tp_mode: e.target.value as TradingSettings["tp_mode"],
+                    })
+                  }
+                  className="w-full px-3 py-2 border border-slate-300 rounded-md"
+                >
+                  <option value="roi_percent">% of margin (ROI)</option>
+                  <option value="price_percent">% of price</option>
+                  <option value="usd">Fixed $</option>
+                </select>
+              </div>
+              {settings.tp_mode === "usd" ? (
+                <>
+                  <div className="space-y-2">
+                    <Label>Take profit ($)</Label>
+                    <Input
+                      type="number"
+                      min={0.5}
+                      step={0.5}
+                      value={Math.abs(settings.take_profit_usd || 2)}
+                      onChange={(e) => {
+                        const v = Math.abs(parseFloat(e.target.value) || 2);
+                        setSettings({ ...settings, take_profit_usd: v });
+                      }}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Stop loss ($)</Label>
+                    <Input
+                      type="number"
+                      min={0.5}
+                      step={0.5}
+                      value={Math.abs(settings.stop_loss_usd || 2)}
+                      onChange={(e) => {
+                        const v = Math.abs(parseFloat(e.target.value) || 2);
+                        setSettings({ ...settings, stop_loss_usd: -v, risk_per_trade_usd: v });
+                      }}
+                    />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="space-y-2">
+                    <Label>Take profit (%)</Label>
+                    <Input
+                      type="number"
+                      min={0.5}
+                      step={0.5}
+                      value={settings.take_profit_percent}
+                      onChange={(e) => {
+                        const v = Math.max(0.5, parseFloat(e.target.value) || 5);
+                        const m = settings.margin_per_position || 40;
+                        setSettings({
+                          ...settings,
+                          take_profit_percent: v,
+                          take_profit_usd: (m * v) / 100,
+                        });
+                      }}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Stop loss (%)</Label>
+                    <Input
+                      type="number"
+                      min={0.5}
+                      step={0.5}
+                      value={settings.stop_loss_percent}
+                      onChange={(e) => {
+                        const v = Math.max(0.5, parseFloat(e.target.value) || 5);
+                        const m = settings.margin_per_position || 40;
+                        setSettings({
+                          ...settings,
+                          stop_loss_percent: v,
+                          stop_loss_usd: -((m * v) / 100),
+                          risk_per_trade_usd: (m * v) / 100,
+                        });
+                      }}
+                    />
+                  </div>
+                </>
+              )}
+              <div className="flex items-center gap-2 pt-6">
+                <input
+                  id="mech_weekends"
+                  type="checkbox"
+                  checked={settings.mech_trade_weekends}
+                  onChange={(e) => setSettings({ ...settings, mech_trade_weekends: e.target.checked })}
+                  className="h-4 w-4 rounded border-slate-300"
+                />
+                <Label htmlFor="mech_weekends">Allow weekend entries</Label>
+              </div>
+            </div>
+            <details className="rounded-lg border border-slate-200 p-3">
+              <summary className="cursor-pointer text-sm font-semibold text-slate-700">Advanced (ATR / ADX / cycle)</summary>
+              <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Min 15m ATR (%)</Label>
+                  <Input type="number" step={0.1} value={settings.mech_atr_min_pct}
+                    onChange={(e) => setSettings({ ...settings, mech_atr_min_pct: parseFloat(e.target.value) || 0 })} />
+                </div>
+                <div className="space-y-2">
+                  <Label>Max 15m ATR (%)</Label>
+                  <Input type="number" step={0.1} value={settings.mech_atr_max_pct}
+                    onChange={(e) => setSettings({ ...settings, mech_atr_max_pct: parseFloat(e.target.value) || 2 })} />
+                </div>
+                <div className="space-y-2">
+                  <Label>Min ADX (trend / breakout)</Label>
+                  <Input type="number" value={settings.mech_adx_min}
+                    onChange={(e) => setSettings({ ...settings, mech_adx_min: parseFloat(e.target.value) || 20 })} />
+                </div>
+                <div className="space-y-2">
+                  <Label>Cycle (seconds)</Label>
+                  <Input type="number" min={15} max={900} value={settings.mech_cycle_seconds}
+                    onChange={(e) => setSettings({ ...settings, mech_cycle_seconds: parseInt(e.target.value) || 60 })} />
+                </div>
+                <div className="space-y-2">
+                  <Label>Cancel unfilled after (5m candles)</Label>
+                  <Input type="number" min={1} max={12} value={settings.mech_entry_ttl_candles}
+                    onChange={(e) => setSettings({ ...settings, mech_entry_ttl_candles: parseInt(e.target.value) || 2 })} />
+                </div>
+              </div>
+            </details>
+          </div>
+        ) : (
+          <div className="space-y-6 pt-2">
+            <div className="space-y-2">
+              <Label htmlFor="llm_model">LLM Model</Label>
+              <select
+                id="llm_model"
+                value={settings.llm_model}
+                onChange={(e) => setSettings({ ...settings, llm_model: e.target.value })}
+                className="w-full px-3 py-2 border border-slate-300 rounded-md"
+              >
+                <option value="deepseek-reasoner">DeepSeek Reasoner</option>
+                <option value="deepseek-chat">DeepSeek Chat</option>
+              </select>
+            </div>
         {/* ============================================ */}
         {/* SECTION 1: TRADING CONFIGURATION */}
         {/* ============================================ */}
@@ -355,7 +747,7 @@ export function TradingSettings() {
               <option value="fixed">Fixed (Use fixed allocation per position)</option>
             </select>
             <p className="text-xs text-slate-500">
-              Choppy alts: use Risk + ATR exits (wide stop up to ~7%, smaller margin so $ risk stays ~$6).
+              Choppy alts: use <b>Risk</b> + ATR exits (wide stop up to ~7%, smaller margin so $ risk stays ~$6).
               Fixed $30 margin cannot also keep a 7% stop and only lose $6 — pick one.
             </p>
           </div>
@@ -381,6 +773,7 @@ export function TradingSettings() {
                     setSettings({
                       ...settings,
                       risk_per_trade_usd: next,
+                      // Keep hard USD stop ceiling in sync (negative).
                       stop_loss_usd: next != null && next > 0 ? -Math.abs(next) : settings.stop_loss_usd,
                     });
                   }}
@@ -583,34 +976,103 @@ export function TradingSettings() {
           
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="take_profit" className="font-semibold">
-                Take Profit Percentage
-                <span className="text-xs text-slate-500 font-normal ml-2">(0.1-100%)</span>
+              <Label htmlFor="tp_mode" className="font-semibold">
+                Take Profit Mode
               </Label>
-              <Input
-                id="take_profit"
-                type="number"
-                min="0.1"
-                max="100"
-                step="0.1"
-                value={settings.take_profit_percent}
+              <select
+                id="tp_mode"
+                value={settings.tp_mode}
                 onChange={(e) =>
                   setSettings({
                     ...settings,
-                    take_profit_percent: parseFloat(e.target.value) || 5.0,
+                    tp_mode: e.target.value as TradingSettings["tp_mode"],
                   })
                 }
-                className="w-full"
-              />
+                className="w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm"
+              >
+                <option value="price_percent">Price % of entry (e.g. 5 = +5% price move)</option>
+                <option value="roi_percent">Margin ROI % (e.g. close at 7% on margin)</option>
+                <option value="usd">Fixed USD profit (e.g. close at $5)</option>
+                <option value="atr_rr">ATR R:R multiple (legacy, often far — ignores %)</option>
+              </select>
               <p className="text-xs text-slate-500">
-                Percentage above entry price (long) or below entry price (short) to take profit.
+                Mechanical respects this mode for <span className="font-medium">both</span> take-profit
+                and stop-loss. Set TP and SL independently for any R:R (1:1, 1:2, …). Levels are placed
+                on the exchange and enforced by the exit watcher (no trailing / ladder).
               </p>
             </div>
 
+            {settings.tp_mode !== "usd" && (
+              <div className="space-y-2">
+                <Label htmlFor="take_profit" className="font-semibold">
+                  Take Profit Percentage
+                  <span className="text-xs text-slate-500 font-normal ml-2">
+                    {settings.tp_mode === "price_percent"
+                      ? "(of entry price)"
+                      : settings.tp_mode === "roi_percent"
+                        ? "(of margin — ROI)"
+                        : "(fallback)"}
+                  </span>
+                </Label>
+                <Input
+                  id="take_profit"
+                  type="number"
+                  min="0.1"
+                  max="100"
+                  step="0.1"
+                  value={settings.take_profit_percent}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      take_profit_percent: parseFloat(e.target.value) || 5.0,
+                    })
+                  }
+                  className="w-full"
+                />
+                <p className="text-xs text-slate-500">
+                  {settings.tp_mode === "price_percent"
+                    ? "Example: 1.0 = lock when price moves +1% from entry."
+                    : settings.tp_mode === "atr_rr"
+                      ? "Ignored while ATR R:R is selected — switch to Price % or Margin ROI %."
+                      : "Example: 5 on $30 margin ≈ +$1.50. At 10x, 5% ROI ≈ 0.5% price move."}
+                </p>
+              </div>
+            )}
+
+            {settings.tp_mode === "usd" && (
+              <div className="space-y-2">
+                <Label htmlFor="take_profit_usd" className="font-semibold">
+                  Take Profit (USD)
+                  <span className="text-xs text-slate-500 font-normal ml-2">(e.g. 1 = +$1)</span>
+                </Label>
+                <Input
+                  id="take_profit_usd"
+                  type="number"
+                  min="0.1"
+                  max="100000"
+                  step="0.1"
+                  value={settings.take_profit_usd ?? ""}
+                  onChange={(e) =>
+                    setSettings({
+                      ...settings,
+                      take_profit_usd: e.target.value ? parseFloat(e.target.value) : null,
+                    })
+                  }
+                  className="w-full"
+                  placeholder="1"
+                />
+              </div>
+            )}
+
+            {settings.tp_mode !== "usd" && (
             <div className="space-y-2">
               <Label htmlFor="stop_loss" className="font-semibold">
                 Stop Loss Percentage
-                <span className="text-xs text-slate-500 font-normal ml-2">(0.1-50%)</span>
+                <span className="text-xs text-slate-500 font-normal ml-2">
+                  {settings.tp_mode === "price_percent"
+                    ? "(of entry price — independent of TP)"
+                    : "(of margin ROI — independent of TP)"}
+                </span>
               </Label>
               <Input
                 id="stop_loss"
@@ -628,34 +1090,50 @@ export function TradingSettings() {
                 className="w-full"
               />
               <p className="text-xs text-slate-500">
-                Percentage below entry price (long) or above entry price (short) to stop loss. Higher values allow more room for reversals.
+                Set freely vs take-profit for your R:R. Example: SL 5% + TP 10% = 1:2 on margin ROI.
               </p>
             </div>
+            )}
 
             <div className="space-y-2">
               <Label htmlFor="stop_loss_usd" className="font-semibold">
-                Hard max loss (USD) — safety ceiling
-                <span className="text-xs text-slate-500 font-normal ml-2">(negative, e.g. -6)</span>
+                {settings.tp_mode === "usd" ? "Stop Loss (USD)" : "Hard max loss (USD) — safety ceiling"}
+                <span className="text-xs text-slate-500 font-normal ml-2">
+                  {settings.tp_mode === "usd" ? "(e.g. 1 = −$1)" : "(negative, e.g. -6)"}
+                </span>
               </Label>
               <Input
                 id="stop_loss_usd"
                 type="number"
-                min="-100000"
-                max="0"
-                step="0.5"
-                value={settings.stop_loss_usd ?? ""}
-                onChange={(e) =>
+                min={settings.tp_mode === "usd" ? 0.1 : -100000}
+                max={settings.tp_mode === "usd" ? 100000 : 0}
+                step="0.1"
+                value={
+                  settings.tp_mode === "usd"
+                    ? settings.stop_loss_usd != null
+                      ? Math.abs(settings.stop_loss_usd)
+                      : ""
+                    : settings.stop_loss_usd ?? ""
+                }
+                onChange={(e) => {
+                  const raw = e.target.value ? parseFloat(e.target.value) : null;
                   setSettings({
                     ...settings,
-                    stop_loss_usd: e.target.value ? parseFloat(e.target.value) : null,
-                  })
-                }
+                    stop_loss_usd:
+                      raw == null
+                        ? null
+                        : settings.tp_mode === "usd"
+                          ? -Math.abs(raw)
+                          : raw,
+                  });
+                }}
                 className="w-full"
-                placeholder="-6"
+                placeholder={settings.tp_mode === "usd" ? "1" : "-6"}
               />
               <p className="text-xs text-slate-500">
-                Emergency close if unrealized PnL hits this dollar loss (even if ATR stop has not).
-                In Risk mode this stays matched to Max loss per trade when you edit that field.
+                {settings.tp_mode === "usd"
+                  ? "Independent of take-profit. Example: TP $2 / SL $1 = 1:2."
+                  : "Emergency dollar close if hit before the % stop (optional safety net)."}
               </p>
             </div>
 
@@ -1003,43 +1481,9 @@ export function TradingSettings() {
           </div>
         </div>
 
-        {/* ============================================ */}
-        {/* SECTION 7: LLM CONFIGURATION */}
-        {/* ============================================ */}
-        <div className="pt-4 border-t-2 border-slate-300 space-y-4">
-          <div className="pb-2 border-b-2 border-slate-300">
-            <h3 className="text-lg font-bold text-slate-800">7. LLM Configuration</h3>
-            <p className="text-xs text-slate-500 mt-1">Configure AI model settings</p>
-          </div>
-          
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="llm_model">LLM Model</Label>
-              <select
-                id="llm_model"
-                value={settings.llm_model}
-                onChange={(e) => setSettings({ ...settings, llm_model: e.target.value })}
-                className="w-full px-3 py-2 border border-slate-300 rounded-md focus:outline-none focus:ring-2 focus:ring-[#c0e156]"
-              >
-                <option value="deepseek-reasoner">DeepSeek Reasoner (Best performance)</option>
-                <option value="deepseek-chat">DeepSeek Chat (Faster, supports function calling)</option>
-              </select>
-            </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="deepseek_max_tokens">DeepSeek Max Tokens</Label>
-              <Input
-                id="deepseek_max_tokens"
-                type="number"
-                min="1000"
-                step="1000"
-                value={settings.deepseek_max_tokens}
-                onChange={(e) => setSettings({ ...settings, deepseek_max_tokens: parseInt(e.target.value) || 20000 })}
-                className="w-full"
-              />
-            </div>
           </div>
-        </div>
+        )}
 
         {/* Message */}
         {message && (

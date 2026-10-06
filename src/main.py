@@ -633,6 +633,8 @@ def main():
         risk_governor.record_close(key, pnl_usd, _LIVE_SETTINGS, equity=_LAST_KNOWN_EQUITY.get("value"))
         profit_ladder.clear(key)
         _EXIT_PLANS.pop(key, None)
+        mech_rec = dict(_MECH_STATE.get("open_trades") or {}).get(key) or {}
+        setup_tag = str(mech_rec.get("setup") or "mechanical")
         if key in _MECH_STATE["managed_assets"] or mech.is_mechanical_mode(_LIVE_SETTINGS):
             _MECH_STATE["managed_assets"].discard(key)
             _MECH_STATE["open_trades"].pop(key, None)
@@ -648,6 +650,41 @@ def main():
             pnl_percent = float(pnl_percent or 0.0)
         except Exception:
             pnl_percent = 0.0
+
+        if mech.is_mechanical_mode(_LIVE_SETTINGS) or mech_rec:
+            try:
+                sb = globals().get("supabase") or None
+                if sb is None and os.getenv("SUPABASE_URL") and (os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY")):
+                    from supabase import create_client
+                    sb = create_client(
+                        os.getenv("SUPABASE_URL"),
+                        os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY"),
+                    )
+                if sb is not None:
+                    network, _label = _venue_network()
+                    entry_px = float(mech_rec.get("entry_price") or 0) or None
+                    row = {
+                        "symbol": key,
+                        "side": "buy" if was_long else "sell",
+                        "size": abs(float(mech_rec.get("amount") or 0) or 0) or 0.001,
+                        "price": entry_px or 0.0,
+                        "fee": 0.0,
+                        "pnl": pnl_usd,
+                        "executed_at": datetime.now(timezone.utc).isoformat(),
+                        "order_id": f"mech-{setup_tag}-{key}-{int(datetime.now(timezone.utc).timestamp())}",
+                    }
+                    sb.table("trades").insert(row).execute()
+                    add_event(f"💾 Mechanical close logged to trades: {key} [{setup_tag}] pnl=${pnl_usd:.2f} ({close_reason})")
+                    _mech_diary({
+                        "asset": key,
+                        "action": "close_logged",
+                        "setup": setup_tag,
+                        "pnl": pnl_usd,
+                        "reason": close_reason,
+                        "network": network,
+                    })
+            except Exception as e:
+                logging.warning(f"Mechanical trade close insert failed for {key}: {e}")
 
         stats = pair_hunter_stats.get(key, {})
         # Dust closes (partial leftovers under $0.50) were counted as full losses and
@@ -1428,18 +1465,31 @@ def main():
         tp_usd = float(targets["tp_usd"])
         sl_usd = float(targets["sl_usd"])
         exit_label = str(targets["label"])
+        setup_name = str(pending.get("setup") or (pending.get("metrics") or {}).get("setup") or "mechanical")
+        exit_style = str(pending.get("exit_style") or (pending.get("metrics") or {}).get("exit_style") or "book")
         if filled_coins <= 0 or avg_px <= 0:
             add_event(f"⚠️  Mechanical {asset}: cannot pin exits ({exit_label}; qty={filled_coins}, px={avg_px})")
             return
-        # Pin exchange algos to the user's TP/SL (independent → any R:R).
-        if targets.get("price_based"):
-            dist_tp = avg_px * float(targets["tp_pct"]) / 100.0
-            dist_sl = avg_px * float(targets["sl_pct"]) / 100.0
+        struct_stop = _safe_float(pending.get("stop"), 0)
+        struct_target = _safe_float(pending.get("target"), 0)
+        if exit_style == "structure_rr" and struct_stop > 0 and struct_target > 0:
+            stop_px = struct_stop
+            target_px = struct_target
+            exit_label = f"{setup_name} structure R:R"
+            tp_usd = filled_coins * abs(target_px - avg_px)
+            sl_usd = filled_coins * abs(stop_px - avg_px)
         else:
-            dist_tp = tp_usd / filled_coins
-            dist_sl = sl_usd / filled_coins
-        stop_px = (avg_px - dist_sl) if is_long else (avg_px + dist_sl)
-        target_px = (avg_px + dist_tp) if is_long else (avg_px - dist_tp)
+            if targets.get("price_based"):
+                dist_tp = avg_px * float(targets["tp_pct"]) / 100.0
+                dist_sl = avg_px * float(targets["sl_pct"]) / 100.0
+            else:
+                dist_tp = tp_usd / filled_coins
+                dist_sl = sl_usd / filled_coins
+            if struct_stop > 0:
+                dist_sl = max(dist_sl, abs(avg_px - struct_stop))
+            stop_px = (avg_px - dist_sl) if is_long else (avg_px + dist_sl)
+            target_px = (avg_px + dist_tp) if is_long else (avg_px - dist_tp)
+            sl_usd = filled_coins * dist_sl
         expect_tp = filled_coins * abs(target_px - avg_px)
         expect_sl = filled_coins * abs(stop_px - avg_px)
         td_mode = pending.get("td_mode") or "isolated"
@@ -1485,6 +1535,8 @@ def main():
             "tp_mode": targets["mode"],
             "tp_pct": targets["tp_pct"],
             "sl_pct": targets["sl_pct"],
+            "setup": setup_name,
+            "exit_style": exit_style,
         }
         if not repair:
             active_trades.append(trade_record)
@@ -1729,9 +1781,10 @@ def main():
                 _mech_skip(asset, sized.reason, res.metrics)
                 continue
 
+            setup_name = getattr(res, "setup", None) or res.metrics.get("setup") or "mechanical"
             rationale = (
-                f"15m {res.metrics.get('regime')} (ADX {res.metrics.get('adx_15m')}, ATR {res.metrics.get('atr_15m_pct')}%), "
-                f"5m pullback to basis, close back {'above' if res.is_long else 'below'}, "
+                f"[{setup_name}] 15m {res.metrics.get('regime')} "
+                f"(ADX {res.metrics.get('adx_15m')}, ATR {res.metrics.get('atr_15m_pct')}%), "
                 f"RVOL {res.metrics.get('rvol')}, RSI {res.metrics.get('rsi_5m')}, "
                 f"${sized.margin_usd:.0f} margin → TP ${sized.reward_usd:.2f} / SL ${sized.risk_usd:.2f}"
             )
@@ -1764,6 +1817,8 @@ def main():
                 "td_mode": td_mode,
                 "rationale": rationale,
                 "metrics": res.metrics,
+                "setup": setup_name,
+                "exit_style": getattr(res, "exit_style", "book"),
             }
             _MECH_STATE["last_signal_ts"][asset] = res.signal_ts
             _MECH_STATE["skips"].pop(asset, None)
@@ -1808,7 +1863,7 @@ def main():
             "mode": "mechanical" if mech.is_mechanical_mode(settings) else "ai",
             "network": network,
             "network_label": label,
-            "margin_usd": abs(_safe_float(settings.get("margin_per_position"), cfg.get("mech_margin_usd") or 30.0)),
+            "margin_usd": abs(_safe_float(settings.get("margin_per_position"), cfg.get("mech_margin_usd") or 40.0)),
             "take_profit_usd": abs(_safe_float(settings.get("take_profit_usd"), cfg.get("mech_take_profit_usd") or 2.0)),
             "stop_loss_usd": abs(_safe_float(settings.get("stop_loss_usd"), cfg.get("mech_stop_loss_usd") or 2.0)),
             "risk_usd": abs(_safe_float(settings.get("risk_per_trade_usd"), 2.0)),
@@ -2086,7 +2141,8 @@ def main():
             pair_hunter_min_volatility = CONFIG.get("pair_hunter_min_volatility", 2.0)
             pair_hunter_max_analyze_assets = CONFIG.get("pair_hunter_max_analyze_assets", 8)
 
-            if enable_pair_hunter:
+            mechanical_universe_mode = mech.is_mechanical_mode(_LIVE_SETTINGS)
+            if enable_pair_hunter and not mechanical_universe_mode:
                 # Initialize pair hunter tracking
                 if not hasattr(run_loop, '_pair_hunter_counter'):
                     run_loop._pair_hunter_counter = 0
@@ -2279,14 +2335,20 @@ def main():
                 mech_cfg = mech.resolve_config(trading_settings, CONFIG)
                 if not getattr(run_loop, "_mech_announced", False):
                     network_now, label_now = _venue_network()
+                    univ = ", ".join(mech.liquid_universe(mech_cfg)[:8])
                     add_event(
-                        f"🤖 MECHANICAL MODE on {label_now}: AI parked. "
+                        f"🤖 MECHANICAL multi-setup on {label_now}: AI parked. "
                         f"{mech.resolve_exit_targets(trading_settings, mech_cfg)['label']}, "
-                        f"{int(mech_cfg['mech_leverage'])}x isolated, cycle {int(mech_cfg['mech_cycle_seconds'])}s, "
-                        f"session {int(mech_cfg['mech_session_start_utc']):02d}–{int(mech_cfg['mech_session_end_utc']):02d} UTC weekdays"
+                        f"${float(mech_cfg['mech_margin_usd']):.0f} margin ×{int(mech_cfg['mech_max_positions'])} max, "
+                        f"{int(mech_cfg['mech_leverage'])}x isolated, cycle {int(mech_cfg['mech_cycle_seconds'])}s. "
+                        f"Setups: session_impulse / range_mr / breakout_retest. Universe: {univ}…"
                     )
                     run_loop._mech_announced = True
-                candidates = [a for a in decision_assets if not _looks_like_forex(a)]
+                candidates = [a for a in mech.liquid_universe(mech_cfg) if not _looks_like_forex(a)]
+                for pos in positions:
+                    a = str(pos.get("symbol") or pos.get("coin") or "").upper()
+                    if a and a not in candidates and not _looks_like_forex(a):
+                        candidates.insert(0, a)
                 try:
                     await _mechanical_cycle(trading_settings, state, positions, candidates)
                 except Exception as e:
