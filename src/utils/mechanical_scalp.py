@@ -7,7 +7,8 @@ Three playbooks share the same OKX candle stack:
 * ``breakout_retest`` — level break + retest; target 1.5R from ATR-floored stop.
 
 Universe is a fixed liquid allowlist (not Pair Hunter). Spread/ATR gates always apply.
-Exits: ATR-floored SL; impulse/range use the dashboard TP/SL book; breakout uses 1.5R.
+Exits: ATR-floored SL; impulse/range use the dashboard TP/SL book (skip if
+structure risk $ > book TP $ so losers cannot dwarf winners); breakout uses 1.5R.
 
 Everything here is pure computation. Order placement lives in main.py.
 """
@@ -1099,6 +1100,14 @@ def size_position(
         dist_sl_struct = abs(entry - float(signal.stop_price))
         dist_sl = max(dist_sl_book, dist_sl_struct)
         actual_sl = dist_sl * coin_qty
+        # Skip asymmetric book trades: capped TP with a wider structure stop
+        # produces "many small wins, one big loss". Prefer quiet over bleed.
+        if actual_sl > tp + 1e-9:
+            return ScalpSkip(
+                signal.asset,
+                f"book skip: structure risk ${actual_sl:.2f} > TP ${tp:.2f} "
+                f"(need 1:1; setup={getattr(signal, 'setup', '?')})",
+            )
         if signal.side == "buy":
             signal.stop_price = entry - dist_sl
             signal.target_price = entry + dist_tp
